@@ -1,0 +1,22 @@
+{
+  "name": "virtual-holsters",
+  "version-string": "3.0.8",
+  "description": "Independent Fallout 4 VR native runtime for Virtual Holsters",
+  "dependencies": [
+    "rapidcsv",
+    "rsm-mmio",
+    "spdlog",
+    "xbyak"
+  ],
+  "builtin-baseline": "b4a3d89125e45bc8f80fb94bef9761d4f4e14fb9",
+  "overrides": [
+    {
+      "name": "fmt",
+      "version": "10.2.1"
+    },
+    {
+      "name": "spdlog",
+      "version": "1.13.0"
+    }
+  ]
+}

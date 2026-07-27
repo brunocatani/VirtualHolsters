@@ -9,14 +9,9 @@
 #include "NiCloneProcess.h"
 #include "Offsets.h"
 #include "SimpleIni.h"
-#include "vrHookAPI.h"
 #include "InvSorting.h"
 #include "BSFlattenedBoneTree.h"
 #include <thread>
-
-extern PluginHandle g_pluginHandle;
-extern F4SEPapyrusInterface* g_papyrus;
-extern F4SEMessagingInterface* g_messaging;
 extern bool gPlayerisSneaking;
 extern bool gInPowerArmor;
 extern bool gIsRightHanded;
@@ -28,7 +23,6 @@ extern bool MenuCheck;
 extern bool fistsPressed;
 extern bool infoPressed;
 extern UInt32 gCurHolster;
-extern OpenVRHookManagerAPI* vrHook;
 extern std::map<std::string, int> boneTreeMap;
 extern std::vector<std::string> boneTreeVec;
 extern std::string holsteredWeapNames[];
@@ -200,4 +194,4 @@ namespace Holsters {
 
 		return (NiNode*)mem;
 	}
-}   
+}

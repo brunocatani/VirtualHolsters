@@ -343,6 +343,10 @@ ASALocalRun/
 # BeatPulse healthcheck temp database
 healthchecksdb
 
+# CMake build trees and machine-local deployment presets
+/build*/
+/CMakeUserPresets.json
+
 # Backup folder for Package Reference Convert tool in Visual Studio 2017
 MigrationBackup/
 

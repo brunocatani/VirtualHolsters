@@ -4,6 +4,7 @@
 #include "f4se/GameMenus.h"
 #include "ConfigModeMenu.h"
 #include "weaponOffset.h"
+#include "VRHook.h"
 #include "f4se/GameReferences.h"
 
 namespace Holsters {
@@ -472,7 +473,7 @@ namespace Holsters {
 					}
 					if ((niUI_Nodes[i]->m_localTransform.pos.y > 1.0) && !bUITilePressed[i]) {
 						bUITilePressed[i] = true;
-						gIsRightHanded ? vrHook->StartHaptics(1, 0.05, 0.3) : vrHook->StartHaptics(2, 0.05, 0.3);
+						gIsRightHanded ? VRHook::g_vrHook->StartHaptics(1, 0.05, 0.3) : VRHook::g_vrHook->StartHaptics(2, 0.05, 0.3);
 						funcs[i]();
 					}
 				}

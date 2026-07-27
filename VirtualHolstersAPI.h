@@ -5,8 +5,8 @@
 /**
  * VirtualHolsters API
  *
- * Exposes holster state information for external mods (like HIGGS/Heisenberg)
- * to query holster zone status and weapon storage state.
+ * Exposes holster state information for independent external consumers to
+ * query holster-zone and weapon-storage state.
  *
  * Usage from external mods:
  *

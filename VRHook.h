@@ -1,130 +1,90 @@
 #pragma once
 
-#include "PapyrusVRAPI.h"
-#include "VRManagerAPI.h"
-
-#include "f4se/NiTypes.h"
 #include "f4se/NiNodes.h"
+#include "f4se/NiTypes.h"
 
+#include <openvr.h>
+
+#include <chrono>
+#include <cstdint>
+#include <map>
 #include <memory>
+#include <string>
 
-
-namespace VRHook {
-
-
-	class VRSystem {
+namespace VRHook
+{
+	class VRSystem
+	{
 	public:
-
-		enum TrackerType {
+		enum TrackerType
+		{
 			HMD,
 			Left,
 			Right,
 			Vive
 		};
 
-		VRSystem() {
-			leftPacket = 0;
-			rightPacket = 0;
+		VRSystem() noexcept;
 
-			vrHook = RequestOpenVRHookManagerObject();
+		void setRoomNode(NiNode* node) noexcept;
+		bool updatePoses() noexcept;
+		[[nodiscard]] bool viveTrackersPresent() const noexcept;
+		[[nodiscard]] bool setVRControllerState() noexcept;
+		[[nodiscard]] vr::VRControllerState_t getControllerState(
+			TrackerType tracker) const noexcept;
 
-			for (vr::TrackedDeviceIndex_t i = 0; i < vr::k_unMaxTrackedDeviceCount; i++) {
-				auto dc = vrHook->GetVRSystem()->GetTrackedDeviceClass(i);
-				if (dc == vr::ETrackedDeviceClass::TrackedDeviceClass_GenericTracker) {
-					viveTrackers.insert({ getProperty(vr::ETrackedDeviceProperty::Prop_ModelNumber_String, i), i });
-				}
-				else if (dc == vr::ETrackedDeviceClass::TrackedDeviceClass_Controller) {
-					std::string prop = getProperty(vr::ETrackedDeviceProperty::Prop_ModelNumber_String, i);
-					if (prop.find("Right") != std::string::npos) {
-						controllers.insert({ "Right", i });
-					}
-					else if (prop.find("Left") != std::string::npos) {
-						controllers.insert({ "Left", i });
-					}
-				}
-				else  if (dc == vr::ETrackedDeviceClass::TrackedDeviceClass_HMD) {
-					controllers.insert({ "HMD", i });
-				}
-			}
-			roomNode = nullptr;
-		}
+		void StartHaptics(
+			unsigned int trackedControllerId,
+			float hapticTime,
+			float hapticIntensity) noexcept;
 
-		inline void setRoomNode(NiNode* a_node) {
-			roomNode = a_node;
-		}
-
-		inline OpenVRHookManagerAPI* getHook() {
-			return vrHook;
-		}
-
-		inline void updatePoses() {
-			vr::VRCompositorError error = vrHook->GetVRCompositor()->GetLastPoses((vr::TrackedDevicePose_t*)renderPoses, vr::k_unMaxTrackedDeviceCount, (vr::TrackedDevicePose_t*)gamePoses, vr::k_unMaxTrackedDeviceCount);
-		}
-
-		inline bool viveTrackersPresent() const { return !viveTrackers.empty(); }
-
-		inline void setVRControllerState() {
-			if (vrHook != nullptr) {
-
-				vr::TrackedDeviceIndex_t lefthand = vrHook->GetVRSystem()->GetTrackedDeviceIndexForControllerRole(vr::ETrackedControllerRole::TrackedControllerRole_LeftHand);
-				vr::TrackedDeviceIndex_t righthand = vrHook->GetVRSystem()->GetTrackedDeviceIndexForControllerRole(vr::ETrackedControllerRole::TrackedControllerRole_RightHand);
-
-				vrHook->GetVRSystem()->GetControllerState(lefthand, &leftControllerState, sizeof(vr::VRControllerState_t));
-				vrHook->GetVRSystem()->GetControllerState(righthand, &rightControllerState, sizeof(vr::VRControllerState_t));
-
-				if (rightControllerState.unPacketNum != rightPacket) {
-				}
-				if (leftControllerState.unPacketNum != leftPacket) {
-				}
-			}
-		}
-
-		inline vr::VRControllerState_t getControllerState(TrackerType a_tracker) {
-			switch (a_tracker) {
-			case Left:
-				return leftControllerState;
-
-			case Right:
-				return rightControllerState;
-
-			default:
-				return rightControllerState;    // TODO: need to figure out a null state to give back if it gets here.
-			}
-		}
-
-		void getTrackerNiTransformByName(std::string trackerName, NiTransform* transform);
-		void getTrackerNiTransformByIndex(vr::TrackedDeviceIndex_t idx, NiTransform* transform);
-		void getControllerNiTransformByName(std::string trackerName, NiTransform* transform);
+		void getTrackerNiTransformByName(
+			const std::string& trackerName,
+			NiTransform* transform);
+		void getTrackerNiTransformByIndex(
+			vr::TrackedDeviceIndex_t index,
+			NiTransform* transform);
+		void getControllerNiTransformByName(
+			const std::string& trackerName,
+			NiTransform* transform);
 		void debugPrint();
 
 	private:
+		struct HapticRequest
+		{
+			std::chrono::steady_clock::time_point until{};
+			float intensity{};
+			bool active{};
+		};
 
-		inline std::string getProperty(vr::ETrackedDeviceProperty property, vr::TrackedDeviceIndex_t idx) {
-			const uint32_t bufSize = vr::k_unMaxPropertyStringSize;
-			std::unique_ptr<char*> pchValue = std::make_unique<char*>(new char[bufSize]);
-			vr::TrackedPropertyError pError = vr::TrackedPropertyError::TrackedProp_NotYetAvailable;
+		[[nodiscard]] bool RefreshInterfaces() noexcept;
+		void DiscoverTrackedDevices() noexcept;
+		[[nodiscard]] std::string GetProperty(
+			vr::ETrackedDeviceProperty property,
+			vr::TrackedDeviceIndex_t index) const;
+		void ServiceHaptics() noexcept;
+		void PulseController(
+			vr::ETrackedControllerRole role,
+			float intensity) noexcept;
 
-			vrHook->GetVRSystem()->GetStringTrackedDeviceProperty(idx, property, *pchValue.get(), bufSize, &pError);
-
-			return std::string(*pchValue.get());
-		}
-
-		uint32_t leftPacket;
-		uint32_t rightPacket;
-		OpenVRHookManagerAPI* vrHook;
-		vr::VRControllerState_t rightControllerState;
-		vr::VRControllerState_t leftControllerState;
-		vr::TrackedDevicePose_t renderPoses[vr::k_unMaxTrackedDeviceCount]; //Used to store available poses
-		vr::TrackedDevicePose_t gamePoses[vr::k_unMaxTrackedDeviceCount]; //Used to store available poses
-		std::map<std::string, vr::TrackedDeviceIndex_t> viveTrackers;
-		std::map<std::string, vr::TrackedDeviceIndex_t> controllers;
-		NiNode* roomNode;
+		std::uint32_t leftPacket_{};
+		std::uint32_t rightPacket_{};
+		vr::IVRSystem* system_{};
+		vr::IVRCompositor* compositor_{};
+		vr::VRControllerState_t rightControllerState_{};
+		vr::VRControllerState_t leftControllerState_{};
+		vr::TrackedDevicePose_t
+			renderPoses_[vr::k_unMaxTrackedDeviceCount]{};
+		vr::TrackedDevicePose_t
+			gamePoses_[vr::k_unMaxTrackedDeviceCount]{};
+		std::map<std::string, vr::TrackedDeviceIndex_t> viveTrackers_;
+		std::map<std::string, vr::TrackedDeviceIndex_t> controllers_;
+		NiNode* roomNode_{};
+		HapticRequest leftHaptic_{};
+		HapticRequest rightHaptic_{};
 	};
 
 	extern VRSystem* g_vrHook;
 
-	inline void InitVRSystem() {
-		g_vrHook = new VRSystem();
-	}
-
+	void InitVRSystem() noexcept;
 }
