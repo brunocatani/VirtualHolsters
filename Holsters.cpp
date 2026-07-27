@@ -7,6 +7,7 @@
 #include "Offsets.h"
 #include "weaponOffset.h"
 #include "VRHook.h"
+#include "VRSceneGraph.h"
 #include "VirtualHolstersAPI.h"
 #include "f4se/GameMenus.h"
 #include "ConfigModeMenu.h"
@@ -1321,10 +1322,12 @@ namespace Holsters {
 			proc.unk48 = Offsets::cloneAddr2;
 			NiNode* holArt = Offsets::cloneNode(retNode, &proc);
 			holArt->m_name = artName.c_str();
-			bone->AttachChild(holArt, true);
+			VRSceneGraph::AttachChild(bone, holArt, true);
 			holArt->m_localTransform = artToChange->m_localTransform;
 			artToChange->m_localTransform.scale = 0;
-			artToChange->m_parent->RemoveChild(artToChange);
+			VRSceneGraph::RemoveChild(
+				artToChange->m_parent,
+				artToChange);
 			//_MESSAGE("UI: HOLSTER ART SUCCESSFULLY CHANGED");
 			CSimpleIniA ini;
 			SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
@@ -2032,9 +2035,9 @@ namespace Holsters {
 				if (Weap2) {
 					Weap2->flags |= 0x1;
 					Weap2->m_localTransform.scale = 0;
-					Weap2->m_parent->RemoveChild(Weap2);
+					VRSceneGraph::RemoveChild(Weap2->m_parent, Weap2);
 				}
-				bone->AttachChild((NiAVObject*)hol, true);
+				VRSceneGraph::AttachChild(bone, hol, true);
 				hol->m_localTransform.scale = (HolsterRegisteredObjects[handle]->radius * 2);
 				HolsterRegisteredObjects[handle]->debugSphere = hol;
 				hol->m_localTransform.pos.x = (hol->m_localTransform.pos.x + HolsterRegisteredObjects[handle]->offset.x);
@@ -2149,7 +2152,7 @@ namespace Holsters {
 		else {
 			hol->flags |= 0x1;
 			hol->m_localTransform.scale = 0;
-			hol->m_parent->RemoveChild(hol);
+			VRSceneGraph::RemoveChild(hol->m_parent, hol);
 		}
 		hol = FindNode("Holster2");
 		if (!hol) {
@@ -2158,7 +2161,7 @@ namespace Holsters {
 		else {
 			hol->flags |= 0x1;
 			hol->m_localTransform.scale = 0;
-			hol->m_parent->RemoveChild(hol);
+			VRSceneGraph::RemoveChild(hol->m_parent, hol);
 		}
 		for (int i = 1; i < 8; i++) {
 			delete HolsterRegisteredObjects[i];
@@ -2302,7 +2305,9 @@ namespace Holsters {
 			if (artToRemove) {
 				artToRemove->flags |= 0x1;
 				artToRemove->m_localTransform.scale = 0;
-				artToRemove->m_parent->RemoveChild(artToRemove);
+				VRSceneGraph::RemoveChild(
+					artToRemove->m_parent,
+					artToRemove);
 			}
 			if (!isInPowerArmor) {
 				if (std::any_of(c_WeaponBlacklist[handle].begin(), c_WeaponBlacklist[handle].end(), [weapName](std::string cbl) {return !cbl.compare(weapName); })) { //Check if the current weapon is black listed for this slot and do not display it if it is.
@@ -2373,9 +2378,16 @@ namespace Holsters {
 						if (P != nullptr && CP != nullptr) {
 							//_MESSAGE("Parent Found");
 							c_CloneNodes[i]->m_name = c_OriginalNodes[i]->m_name;
-							P->RemoveChild(c_OriginalNodes[i]);
-							CP->RemoveChild(c_CloneNodes[i]);
-							CP->AttachChild(c_OriginalNodes[i], true);
+							VRSceneGraph::RemoveChild(
+								P,
+								c_OriginalNodes[i]);
+							VRSceneGraph::RemoveChild(
+								CP,
+								c_CloneNodes[i]);
+							VRSceneGraph::AttachChild(
+								CP,
+								c_OriginalNodes[i],
+								true);
 							Weap->kFlagForceUpdate;
 							holsteredW->kFlagForceUpdate;
 							P = nullptr;
@@ -2395,10 +2407,10 @@ namespace Holsters {
 				NiNode* Weap2 = getChildNode(NameofHolster, (*g_player)->unkF0->rootNode); //Check for accidental spawned clones
 				if (Weap2) {
 					Weap2->m_localTransform.scale = 0;
-					Weap2->m_parent->RemoveChild(Weap2);
+					VRSceneGraph::RemoveChild(Weap2->m_parent, Weap2);
 				}
 				holsteredW->m_spCollisionObject = nullptr;  // Remove weapon collision so that holstered weapons do not break when the player uses furniture.
-				bone->AttachChild(holsteredW, true);
+				VRSceneGraph::AttachChild(bone, holsteredW, true);
 				WeaponRegisteredObjects[handle]->WeapMesh = holsteredW;
 				NiTransform _customTransform;
 				UInt32 WeapForm = WeaponRegisteredObjects[handle]->ThisForm;
@@ -2570,7 +2582,7 @@ namespace Holsters {
 				NiNode* retNode = loadNifFromFile(path);
 				NiNode* holArt = Offsets::cloneNode(retNode, &proc);
 				holArt->m_name = artName.c_str();
-				bone->AttachChild(holArt, true);
+				VRSceneGraph::AttachChild(bone, holArt, true);
 				holArt->m_localTransform = holsteredW->m_localTransform;
 				WeaponRegisteredObjects[handle]->ArtMesh = holArt;
 				//_MESSAGE("REGISTER HOLSTERED WEAPON : CUSTOM HOLSTER ART APPLIED");
@@ -2597,7 +2609,7 @@ namespace Holsters {
 							NiNode* wTBD = getChildNode(HolsterNames[handle].c_str(), (*g_player)->unkF0->rootNode);
 							if (wTBD != nullptr) {
 								_MESSAGE("REMOVING WEAPON");
-								pNode->RemoveChild(wTBD);
+								VRSceneGraph::RemoveChild(pNode, wTBD);
 								pNode = nullptr;
 								_MESSAGE("WEAPON REMOVED");
 							}
@@ -2621,7 +2633,9 @@ namespace Holsters {
 								NiNode* parentNode = nullptr;
 								gInPowerArmor ? parentNode = FindNode(PAWeaponBones[handle].c_str()) : parentNode = FindNode(WeaponBones[handle].c_str());
 								if (parentNode) {
-									parentNode->RemoveChild(artToRemove);
+									VRSceneGraph::RemoveChild(
+										parentNode,
+										artToRemove);
 								}
 								//_MESSAGE("destroyed art");
 							}
@@ -2724,7 +2738,9 @@ namespace Holsters {
 					else {
 						artToMove->flags |= 0x1;
 						artToMove->m_localTransform.scale = 0;
-						artToMove->m_parent->RemoveChild(artToMove);
+						VRSceneGraph::RemoveChild(
+							artToMove->m_parent,
+							artToMove);
 						//_MESSAGE("EQUIP EVENT MOVE: NO HOLSTER SPECIFIC CONFIG FOUND...DESTROYING");
 					}
 				}

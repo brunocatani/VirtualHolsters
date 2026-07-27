@@ -31,9 +31,13 @@ function Assert-NotContains {
 $main = Get-Content -LiteralPath (Join-Path $Root "main.cpp") -Raw
 $hook = Get-Content -LiteralPath (Join-Path $Root "hook.cpp") -Raw
 $holsters = Get-Content -LiteralPath (Join-Path $Root "Holsters.cpp") -Raw
+$configMode = Get-Content -LiteralPath (Join-Path $Root "ConfigModeMenu.cpp") -Raw
+$legacyBridge = Get-Content -LiteralPath (Join-Path $Root "LegacyBridge.cpp") -Raw
 $interaction = Get-Content -LiteralPath (Join-Path $Root "HolsterInteraction.h") -Raw
 $vrHeader = Get-Content -LiteralPath (Join-Path $Root "VRHook.h") -Raw
 $vrSource = Get-Content -LiteralPath (Join-Path $Root "VRHook.cpp") -Raw
+$sceneGraphHeader = Get-Content -LiteralPath (Join-Path $Root "VRSceneGraph.h") -Raw
+$sceneGraphSource = Get-Content -LiteralPath (Join-Path $Root "VRSceneGraph.cpp") -Raw
 $cmake = Get-Content -LiteralPath (Join-Path $Root "CMakeLists.txt") -Raw
 $exports = Get-Content -LiteralPath (Join-Path $Root "exports.def") -Raw
 
@@ -67,6 +71,23 @@ Assert-Contains $hook 'IsExecutableAddress' "A chained predecessor must point to
 Assert-Contains $hook 'write_call<5>' "The frame integration must preserve ordinary callsite chaining."
 Assert-NotContains $hook '0xd8187e|0xD8187E' "The Windows message-pump callsite must never return."
 
+Assert-Contains $sceneGraphSource 'kAttachChildSlot\s*=\s*0x3D' "FO4VR NiNode AttachChild must use verified slot 0x3D."
+Assert-Contains $sceneGraphSource 'kRemoveChildSlot\s*=\s*0x40' "FO4VR NiNode RemoveChild must use verified slot 0x40."
+Assert-Contains $sceneGraphSource "kAttachChildRva\s*=\s*0x01C1'7E20" "FO4VR NiNode AttachChild identity must remain explicit."
+Assert-Contains $sceneGraphSource "kRemoveChildRva\s*=\s*0x01C1'7F70" "FO4VR NiNode RemoveChild identity must remain explicit."
+Assert-Contains $sceneGraphSource '0x48,\s*0x85,\s*0xD2,\s*0x0F,\s*0x84,\s*0xBF' "AttachChild live-byte verification must remain build-enforced."
+Assert-Contains $sceneGraphSource '0x48,\s*0x83,\s*0xEC,\s*0x28,\s*0x48,\s*0x8B,\s*0x01' "RemoveChild live-byte verification must remain build-enforced."
+Assert-Contains $sceneGraphSource 'RE::NiNode::VTABLE\[0\]\.address\(\)' "NiNode ABI validation must resolve the authoritative address-library vtable."
+Assert-Contains $sceneGraphSource 'VerifyBaseVtableEntry' "NiNode slots must be checked against the live base vtable before gameplay."
+Assert-Contains $sceneGraphSource 'segment\(REL::Segment::text\)' "Every runtime NiNode dispatch target must remain inside Fallout4VR executable code."
+Assert-Contains $sceneGraphSource 'IsExecutableGameTextAddress\(target\)' "Derived NiNode dispatches must fail closed outside executable game code."
+Assert-Contains $legacyBridge 'VRSceneGraph::Initialize\(\)' "GameLoaded must verify the FO4VR scene-graph ABI before legacy gameplay starts."
+Assert-Contains ($holsters + $configMode) 'VRSceneGraph::AttachChild' "Legacy scene-graph attachment sites must use the FO4VR adapter."
+Assert-Contains ($holsters + $configMode) 'VRSceneGraph::RemoveChild' "Legacy scene-graph removal sites must use the FO4VR adapter."
+Assert-NotContains $productionText '->\s*(?:AttachChild|InsertChildAt|DetachChild|RemoveChild|DetachChildAt|RemoveChildAt|SetAt|UpdateWorldData|UpdateTransformAndBounds|UpdateTransforms|UpdateUpwardPass)\s*\(' "Legacy production sources must not dispatch shifted flat-layout scene-graph virtuals directly."
+Assert-Contains $sceneGraphHeader '(?s)AttachChild\(.+?\)\s+noexcept' "The scene-graph adapter must not propagate exceptions."
+Assert-Contains $sceneGraphHeader 'RemoveChild\(.+?\)\s+noexcept' "The scene-graph adapter must not propagate exceptions."
+
 Assert-Contains $vrSource 'vr::VRSystem\(\)' "OpenVR access must be borrowed from the process."
 Assert-Contains $vrSource 'TriggerHapticPulse' "Haptics must use the direct OpenVR ABI."
 Assert-NotContains $productionText 'FO4VRTools|RequestOpenVRHookManagerObject|GetVRHookManager' "Production source must not depend on FO4VRTools."
@@ -87,6 +108,14 @@ Assert-Contains $cmake 'VirtualHolstersInteractionTests' "The release gesture po
 Assert-Contains $cmake 'POST_BUILD_COPY_PLUGIN' "The auto-deploying build path must remain available."
 Assert-NotContains $cmake 'TARGET_PDB_FILE' "Auto-deploy must copy only VirtualHolsters.dll."
 Assert-NotContains $cmake 'INTERPROCEDURAL_OPTIMIZATION_RELEASE\s+TRUE' "LTO must remain disabled."
+Assert-Contains $cmake '"VRSceneGraph\.cpp"' "The FO4VR scene-graph ABI adapter must be compiled into the plugin."
+$legacySourceSet = [regex]::Match(
+    $cmake,
+    '(?s)set\(\s*LEGACY_GAMEPLAY_SOURCES(?<Body>.*?)\)\s*set_source_files_properties')
+if (-not $legacySourceSet.Success) {
+    throw "The legacy gameplay source boundary could not be located."
+}
+Assert-NotContains $legacySourceSet.Groups["Body"].Value 'VRSceneGraph\.cpp' "The FO4VR scene-graph adapter must compile against CommonLibF4VR, not legacy F4SE headers."
 
 Assert-Contains $exports '(?m)^\s*F4SEPlugin_Query\s*$' "F4SEPlugin_Query must be exported."
 Assert-Contains $exports '(?m)^\s*F4SEPlugin_Load\s*$' "F4SEPlugin_Load must be exported."

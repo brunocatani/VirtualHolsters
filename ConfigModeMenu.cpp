@@ -5,6 +5,7 @@
 #include "ConfigModeMenu.h"
 #include "weaponOffset.h"
 #include "VRHook.h"
+#include "VRSceneGraph.h"
 #include "f4se/GameReferences.h"
 
 namespace Holsters {
@@ -62,7 +63,7 @@ namespace Holsters {
 		proc.unk48 = Offsets::cloneAddr2;
 		UIMain = Offsets::cloneNode(retNode, &proc);
 		UIMain->m_name = BSFixedString(NameofMesh);
-		boneNode->AttachChild((NiAVObject*)UIMain, true);
+		VRSceneGraph::AttachChild(boneNode, UIMain, true);
 		gInPowerArmor ? UIMain->m_localTransform.scale = 0.85 : UIMain->m_localTransform.scale = 0.7;
 		UIMain->flags &= 0xfffffffffffffffe;
 		//_MESSAGE("MAIN MENU CREATED");
@@ -75,14 +76,14 @@ namespace Holsters {
 			NiNode* retNode = loadNifFromFile(mUI_Nodes[i]);
 			NiNode* UIItem = Offsets::cloneNode(retNode, &proc);
 			UIItem->m_name = BSFixedString(UI_ITEMNAME);
-			UIMain->AttachChild((NiAVObject*)UIItem, true);
+			VRSceneGraph::AttachChild(UIMain, UIItem, true);
 			UIItem->flags &= 0xfffffffffffffffe;
 			niUI_Nodes[i] = UIItem;
 			BSFixedString UI_ITEMNAME2 = (nUI_Tiles[i]);
 			retNode = loadNifFromFile(mUI_Tiles[i]);
 			NiNode* UIItem2 = Offsets::cloneNode(retNode, &proc);
 			UIItem2->m_name = BSFixedString(UI_ITEMNAME2);
-			UIItem->AttachChild((NiAVObject*)UIItem2, true);
+			VRSceneGraph::AttachChild(UIItem, UIItem2, true);
 			UIItem2->flags &= 0xfffffffffffffffe;
 			niUI_Tiles[i] = UIItem2;
 			std::string tile2 = "Tile: " + std::to_string(i) + " Completed";
@@ -93,56 +94,68 @@ namespace Holsters {
 		retNode = loadNifFromFile(mUI_Info_Holster[gCurHolster]);
 		UIHolsterLable = Offsets::cloneNode(retNode, &proc);
 		UIHolsterLable->m_name = BSFixedString("CurrentHolster");
-		UIMain->AttachChild((NiAVObject*)UIHolsterLable, true);
+		VRSceneGraph::AttachChild(UIMain, UIHolsterLable, true);
 		UIHolsterLable->flags &= 0xfffffffffffffffe;
 
 		// Add Current UI MODE Lable
 		retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_MODE02.nif");
 		UIModeLable = Offsets::cloneNode(retNode, &proc);
 		UIModeLable->m_name = BSFixedString("UI-INFO_MODE");
-		UIMain->AttachChild((NiAVObject*)UIModeLable, true);
+		VRSceneGraph::AttachChild(UIMain, UIModeLable, true);
 		UIModeLable->flags &= 0xfffffffffffffffe;
 
 		// Add SNEAK MODE Lable
 		gPlayerisSneaking ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_SNEAKON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_SNEAKOFF.nif");
 		gPlayerisSneaking ? UISneakOn = Offsets::cloneNode(retNode, &proc) : UISneakOff = Offsets::cloneNode(retNode, &proc);
 		gPlayerisSneaking ? UISneakOn->m_name = BSFixedString("UISneakOn") : UISneakOff->m_name = BSFixedString("UISneakOff");
-		gPlayerisSneaking ? UIMain->AttachChild((NiAVObject*)UISneakOn, true) : UIMain->AttachChild((NiAVObject*)UISneakOff, true);
+		gPlayerisSneaking ?
+			VRSceneGraph::AttachChild(UIMain, UISneakOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UISneakOff, true);
 		gPlayerisSneaking ? UISneakOn->flags &= 0xfffffffffffffffe : UISneakOff->flags &= 0xfffffffffffffffe;
 
 		// Add PA MODE Lable
 		gInPowerArmor ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_PWRARMORON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_PWRARMOROFF.nif");
 		gInPowerArmor ? UIPwrArmorOn = Offsets::cloneNode(retNode, &proc) : UIPwrArmorOff = Offsets::cloneNode(retNode, &proc);
 		gInPowerArmor ? UIPwrArmorOn->m_name = BSFixedString("UIPwrArmorOn") : UIPwrArmorOff->m_name = BSFixedString("UIPwrArmorOff");
-		gInPowerArmor ? UIMain->AttachChild((NiAVObject*)UIPwrArmorOn, true) : UIMain->AttachChild((NiAVObject*)UIPwrArmorOff, true);
+		gInPowerArmor ?
+			VRSceneGraph::AttachChild(UIMain, UIPwrArmorOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UIPwrArmorOff, true);
 		gInPowerArmor ? UIPwrArmorOn->flags &= 0xfffffffffffffffe : UIPwrArmorOff->flags &= 0xfffffffffffffffe;
 
 		// Add HAPTICS MODE STATUS
 		ghapticsEnabled ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_HAPTICSON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_HAPTICSOFF.nif");
 		ghapticsEnabled ? UIHapticsOn = Offsets::cloneNode(retNode, &proc) : UIHapticsOff = Offsets::cloneNode(retNode, &proc);
 		ghapticsEnabled ? UIHapticsOn->m_name = BSFixedString("UIHapticsOn") : UIHapticsOff->m_name = BSFixedString("UIHapticsOff");
-		ghapticsEnabled ? UIMain->AttachChild((NiAVObject*)UIHapticsOn, true) : UIMain->AttachChild((NiAVObject*)UIHapticsOff, true);
+		ghapticsEnabled ?
+			VRSceneGraph::AttachChild(UIMain, UIHapticsOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UIHapticsOff, true);
 		ghapticsEnabled ? UIHapticsOn->flags &= 0xfffffffffffffffe : UIHapticsOff->flags &= 0xfffffffffffffffe;
 
 		// Add SPHERE MODE STATUS
 		gshowSpheres ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_SPHERESON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_SPHERESOFF.nif");
 		gshowSpheres ? UISpheresOn = Offsets::cloneNode(retNode, &proc) : UISpheresOff = Offsets::cloneNode(retNode, &proc);
 		gshowSpheres ? UISpheresOn->m_name = BSFixedString("UISpheresOn") : UISpheresOff->m_name = BSFixedString("UISpheresOff");
-		gshowSpheres ? UIMain->AttachChild((NiAVObject*)UISpheresOn, true) : UIMain->AttachChild((NiAVObject*)UISpheresOff, true);
+		gshowSpheres ?
+			VRSceneGraph::AttachChild(UIMain, UISpheresOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UISpheresOff, true);
 		gshowSpheres ? UISpheresOn->flags &= 0xfffffffffffffffe : UISpheresOff->flags &= 0xfffffffffffffffe;
 
 		// Add WEAPON MODE STATUS
 		gShowWeapons ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_WEAPONSON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_WEAPONSOFF.nif");
 		gShowWeapons ? UIWeaponsOn = Offsets::cloneNode(retNode, &proc) : UIWeaponsOff = Offsets::cloneNode(retNode, &proc);
 		gShowWeapons ? UIWeaponsOn->m_name = BSFixedString("UIWeaponsOn") : UIWeaponsOff->m_name = BSFixedString("UIWeaponsOff");
-		gShowWeapons ? UIMain->AttachChild((NiAVObject*)UIWeaponsOn, true) : UIMain->AttachChild((NiAVObject*)UIWeaponsOff, true);
+		gShowWeapons ?
+			VRSceneGraph::AttachChild(UIMain, UIWeaponsOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UIWeaponsOff, true);
 		gShowWeapons ? UIWeaponsOn->flags &= 0xfffffffffffffffe : UIWeaponsOff->flags &= 0xfffffffffffffffe;
 
 		// Add ACTIVATE MODE STATUS
 		c_ActivationDisabled ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_ACTIVATEON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_ACTIVATEOFF.nif");
 		c_ActivationDisabled ? UIActivateOn = Offsets::cloneNode(retNode, &proc) : UIActivateOff = Offsets::cloneNode(retNode, &proc);
 		c_ActivationDisabled ? UIActivateOn->m_name = BSFixedString("UIACTIVATEOn") : UIActivateOff->m_name = BSFixedString("UIACTIVATEOff");
-		c_ActivationDisabled ? UIMain->AttachChild((NiAVObject*)UIActivateOn, true) : UIMain->AttachChild((NiAVObject*)UIActivateOff, true);
+		c_ActivationDisabled ?
+			VRSceneGraph::AttachChild(UIMain, UIActivateOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UIActivateOff, true);
 		c_ActivationDisabled ? UIActivateOn->flags &= 0xfffffffffffffffe : UIActivateOff->flags &= 0xfffffffffffffffe;
 		//_MESSAGE("Activation Message");
 
@@ -150,7 +163,9 @@ namespace Holsters {
 		c_VATSDisabled ? retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_VATSON.nif") : retNode = loadNifFromFile("Data/Meshes/VRH/UI-INFO_VATSOFF.nif");
 		c_VATSDisabled ? UIVATSOn = Offsets::cloneNode(retNode, &proc) : UIVATSOff = Offsets::cloneNode(retNode, &proc);
 		c_VATSDisabled ? UIVATSOn->m_name = BSFixedString("UIVATSOn") : UIVATSOff->m_name = BSFixedString("UIVATSOff");
-		c_VATSDisabled ? UIMain->AttachChild((NiAVObject*)UIVATSOn, true) : UIMain->AttachChild((NiAVObject*)UIVATSOff, true);
+		c_VATSDisabled ?
+			VRSceneGraph::AttachChild(UIMain, UIVATSOn, true) :
+			VRSceneGraph::AttachChild(UIMain, UIVATSOff, true);
 		c_VATSDisabled ? UIVATSOn->flags &= 0xfffffffffffffffe : UIVATSOff->flags &= 0xfffffffffffffffe;
 		//_MESSAGE("VATS Message");
 
@@ -159,7 +174,10 @@ namespace Holsters {
 				retNode = loadNifFromFile(nUI_InfoNodes[i]);
 				niUIButton_Nodes[i] = Offsets::cloneNode(retNode, &proc);
 				niUIButton_Nodes[i]->m_name = BSFixedString(mUI_InfoTiles[i]);
-				UIMain->AttachChild((NiAVObject*)niUIButton_Nodes[i], true);
+				VRSceneGraph::AttachChild(
+					UIMain,
+					niUIButton_Nodes[i],
+					true);
 				niUIButton_Nodes[i]->flags &= 0xfffffffffffffffe;	       
 		}
 		if (c_holsterButtonID == 1) {
@@ -259,7 +277,7 @@ namespace Holsters {
         if (UIMain != nullptr) {
 			UIMain->flags |= 0x1;
 			UIMain->m_localTransform.scale = 0;
-			UIMain->m_parent->RemoveChild(UIMain);
+			VRSceneGraph::RemoveChild(UIMain->m_parent, UIMain);
 			UIMain = nullptr;
 		}
 		// UnHide 'Back of Hand' UI
@@ -295,7 +313,7 @@ namespace Holsters {
 		if (boneNode) {
 			boneNode->flags |= 0x1;
 			boneNode->m_localTransform.scale = 0;
-			boneNode->m_parent->RemoveChild(boneNode);
+			VRSceneGraph::RemoveChild(boneNode->m_parent, boneNode);
 		}
 		primaryAttachNode = nullptr;
 		closeSelfieMode();
@@ -336,7 +354,7 @@ namespace Holsters {
 			UIModeLable->flags |= 0x1;
 			UIModeLable->m_localTransform.scale = 0;
 			if (UIMain != nullptr) {
-				UIMain->RemoveChild(UIModeLable);
+				VRSceneGraph::RemoveChild(UIMain, UIModeLable);
 			}
 			UIModeLable = nullptr;
 			NiCloneProcess proc;
@@ -345,7 +363,7 @@ namespace Holsters {
 			UIModeLable = Offsets::cloneNode(retNode, &proc);
 			UIModeLable->m_name = BSFixedString("UI-INFO_MODE");
 			if (UIMain != nullptr) {
-				UIMain->AttachChild((NiAVObject*)UIModeLable, true);
+				VRSceneGraph::AttachChild(UIMain, UIModeLable, true);
 				UIModeLable->flags &= 0xfffffffffffffffe;
 			}
 		}
@@ -379,7 +397,7 @@ namespace Holsters {
 			UIHolsterLable->flags |= 0x1;
 			UIHolsterLable->m_localTransform.scale = 0;
 			if (UIMain != nullptr) {
-				UIMain->RemoveChild(UIHolsterLable);
+				VRSceneGraph::RemoveChild(UIMain, UIHolsterLable);
 			}
 			UIHolsterLable = nullptr;
 		}
@@ -390,7 +408,7 @@ namespace Holsters {
 		proc.unk48 = Offsets::cloneAddr2;
 		UIHolsterLable = Offsets::cloneNode(retNode, &proc);
 		UIHolsterLable->m_name = BSFixedString("CurrentHolster");
-		UIMain->AttachChild((NiAVObject*)UIHolsterLable, true);
+		VRSceneGraph::AttachChild(UIMain, UIHolsterLable, true);
 		UIHolsterLable->flags &= 0xfffffffffffffffe;
 		// Show Next Sphere
 		if (configMode == 1) {
@@ -415,7 +433,7 @@ namespace Holsters {
 				UISneakOn->flags |= 0x1;
 				UISneakOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UISneakOn);
+					VRSceneGraph::RemoveChild(UIMain, UISneakOn);
 				}
 				UISneakOn = nullptr;
 			}
@@ -424,7 +442,7 @@ namespace Holsters {
 				UISneakOff = Offsets::cloneNode(retNode, &proc);
 				UISneakOff->m_name = BSFixedString("UISneakOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UISneakOff, true);
+					VRSceneGraph::AttachChild(UIMain, UISneakOff, true);
 					UISneakOff->flags &= 0xfffffffffffffffe;
 					UISneakOff->m_localTransform.scale = 1;
 				}
@@ -435,7 +453,7 @@ namespace Holsters {
 				UISneakOff->flags |= 0x1;
 				UISneakOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UISneakOff);
+					VRSceneGraph::RemoveChild(UIMain, UISneakOff);
 				}
 				UISneakOff = nullptr;
 			}
@@ -444,7 +462,7 @@ namespace Holsters {
 				UISneakOn = Offsets::cloneNode(retNode, &proc);
 				UISneakOn->m_name = BSFixedString("UISneakOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UISneakOn, true);
+					VRSceneGraph::AttachChild(UIMain, UISneakOn, true);
 					UISneakOn->flags &= 0xfffffffffffffffe;
 					UISneakOn->m_localTransform.scale = 1;
 				}
@@ -490,7 +508,7 @@ namespace Holsters {
 				UIPwrArmorOn->flags |= 0x1;
 				UIPwrArmorOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIPwrArmorOn);
+					VRSceneGraph::RemoveChild(UIMain, UIPwrArmorOn);
 				}
 				UIPwrArmorOn = nullptr;
 			}
@@ -499,7 +517,10 @@ namespace Holsters {
 				UIPwrArmorOff = Offsets::cloneNode(retNode, &proc);
 				UIPwrArmorOff->m_name = BSFixedString("UIPwrArmorOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIPwrArmorOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIPwrArmorOff,
+						true);
 					UIPwrArmorOff->flags &= 0xfffffffffffffffe;
 					UIPwrArmorOff->m_localTransform.scale = 1;
 				}
@@ -510,7 +531,7 @@ namespace Holsters {
 				UIPwrArmorOff->flags |= 0x1;
 				UIPwrArmorOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIPwrArmorOff);
+					VRSceneGraph::RemoveChild(UIMain, UIPwrArmorOff);
 				}
 				UIPwrArmorOff = nullptr;
 			}
@@ -519,7 +540,10 @@ namespace Holsters {
 				UIPwrArmorOn = Offsets::cloneNode(retNode, &proc);
 				UIPwrArmorOn->m_name = BSFixedString("UIPwrArmorOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIPwrArmorOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIPwrArmorOn,
+						true);
 					UIPwrArmorOn->flags &= 0xfffffffffffffffe;
 					UIPwrArmorOn->m_localTransform.scale = 1;
 				}
@@ -536,7 +560,7 @@ namespace Holsters {
 				UIHapticsOn->flags |= 0x1;
 				UIHapticsOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIHapticsOn);
+					VRSceneGraph::RemoveChild(UIMain, UIHapticsOn);
 				}
 				UIHapticsOn = nullptr;
 			}
@@ -545,7 +569,10 @@ namespace Holsters {
 				UIHapticsOff = Offsets::cloneNode(retNode, &proc);
 				UIHapticsOff->m_name = BSFixedString("UIHapticsOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIHapticsOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIHapticsOff,
+						true);
 					UIHapticsOff->flags &= 0xfffffffffffffffe;
 					UIHapticsOff->m_localTransform.scale = 1;
 				}
@@ -556,7 +583,7 @@ namespace Holsters {
 				UIHapticsOff->flags |= 0x1;
 				UIHapticsOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIHapticsOff);
+					VRSceneGraph::RemoveChild(UIMain, UIHapticsOff);
 				}
 				UIHapticsOff = nullptr;
 			}
@@ -565,7 +592,10 @@ namespace Holsters {
 				UIHapticsOn = Offsets::cloneNode(retNode, &proc);
 				UIHapticsOn->m_name = BSFixedString("UIHapticsOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIHapticsOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIHapticsOn,
+						true);
 					UIHapticsOn->flags &= 0xfffffffffffffffe;
 					UIHapticsOn->m_localTransform.scale = 1;
 				}
@@ -576,7 +606,7 @@ namespace Holsters {
 				UISpheresOn->flags |= 0x1;
 				UISpheresOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UISpheresOn);
+					VRSceneGraph::RemoveChild(UIMain, UISpheresOn);
 				}
 				UISpheresOn = nullptr;
 			}
@@ -585,7 +615,10 @@ namespace Holsters {
 				UISpheresOff = Offsets::cloneNode(retNode, &proc);
 				UISpheresOff->m_name = BSFixedString("UISpheresOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UISpheresOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UISpheresOff,
+						true);
 					UISpheresOff->flags &= 0xfffffffffffffffe;
 					UISpheresOff->m_localTransform.scale = 1;
 				}
@@ -596,7 +629,7 @@ namespace Holsters {
 				UISpheresOff->flags |= 0x1;
 				UISpheresOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UISpheresOff);
+					VRSceneGraph::RemoveChild(UIMain, UISpheresOff);
 				}
 				UISpheresOff = nullptr;
 			}
@@ -605,7 +638,10 @@ namespace Holsters {
 				UISpheresOn = Offsets::cloneNode(retNode, &proc);
 				UISpheresOn->m_name = BSFixedString("UISpheresOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UISpheresOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UISpheresOn,
+						true);
 					UISpheresOn->flags &= 0xfffffffffffffffe;
 					UISpheresOn->m_localTransform.scale = 1;
 				}
@@ -616,7 +652,7 @@ namespace Holsters {
 				UIWeaponsOn->flags |= 0x1;
 				UIWeaponsOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIWeaponsOn);
+					VRSceneGraph::RemoveChild(UIMain, UIWeaponsOn);
 				}
 				UIWeaponsOn = nullptr;
 			}
@@ -625,7 +661,10 @@ namespace Holsters {
 				UIWeaponsOff = Offsets::cloneNode(retNode, &proc);
 				UIWeaponsOff->m_name = BSFixedString("UIWeaponsOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIWeaponsOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIWeaponsOff,
+						true);
 					UIWeaponsOff->flags &= 0xfffffffffffffffe;
 					UIWeaponsOff->m_localTransform.scale = 1;
 				}
@@ -636,7 +675,7 @@ namespace Holsters {
 				UIWeaponsOff->flags |= 0x1;
 				UIWeaponsOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIWeaponsOff);
+					VRSceneGraph::RemoveChild(UIMain, UIWeaponsOff);
 				}
 				UIWeaponsOff = nullptr;
 			}
@@ -645,7 +684,10 @@ namespace Holsters {
 				UIWeaponsOn = Offsets::cloneNode(retNode, &proc);
 				UIWeaponsOn->m_name = BSFixedString("UIWeaponsOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIWeaponsOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIWeaponsOn,
+						true);
 					UIWeaponsOn->flags &= 0xfffffffffffffffe;
 					UIWeaponsOn->m_localTransform.scale = 1;
 				}
@@ -656,7 +698,7 @@ namespace Holsters {
 				UIActivateOn->flags |= 0x1;
 				UIActivateOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIActivateOn);
+					VRSceneGraph::RemoveChild(UIMain, UIActivateOn);
 				}
 				UIActivateOn = nullptr;
 			}
@@ -665,7 +707,10 @@ namespace Holsters {
 				UIActivateOff = Offsets::cloneNode(retNode, &proc);
 				UIActivateOff->m_name = BSFixedString("UIACTIVATEOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIActivateOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIActivateOff,
+						true);
 					UIActivateOff->flags &= 0xfffffffffffffffe;
 					UIActivateOff->m_localTransform.scale = 1;
 				}
@@ -676,7 +721,7 @@ namespace Holsters {
 				UIActivateOff->flags |= 0x1;
 				UIActivateOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIActivateOff);
+					VRSceneGraph::RemoveChild(UIMain, UIActivateOff);
 				}
 				UIActivateOff = nullptr;
 			}
@@ -685,7 +730,10 @@ namespace Holsters {
 				UIActivateOn = Offsets::cloneNode(retNode, &proc);
 				UIActivateOn->m_name = BSFixedString("UIACTIVATEOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIActivateOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIActivateOn,
+						true);
 					UIActivateOn->flags &= 0xfffffffffffffffe;
 					UIActivateOn->m_localTransform.scale = 1;
 				}
@@ -696,7 +744,7 @@ namespace Holsters {
 				UIVATSOn->flags |= 0x1;
 				UIVATSOn->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIVATSOn);
+					VRSceneGraph::RemoveChild(UIMain, UIVATSOn);
 				}
 				UIVATSOn = nullptr;
 			}
@@ -705,7 +753,10 @@ namespace Holsters {
 				UIVATSOff = Offsets::cloneNode(retNode, &proc);
 				UIVATSOff->m_name = BSFixedString("UIVATSOff");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIVATSOff, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIVATSOff,
+						true);
 					UIVATSOff->flags &= 0xfffffffffffffffe;
 					UIVATSOff->m_localTransform.scale = 1;
 				}
@@ -716,7 +767,7 @@ namespace Holsters {
 				UIVATSOff->flags |= 0x1;
 				UIVATSOff->m_localTransform.scale = 0;
 				if (UIMain != nullptr) {
-					UIMain->RemoveChild(UIVATSOff);
+					VRSceneGraph::RemoveChild(UIMain, UIVATSOff);
 				}
 				UIVATSOff = nullptr;
 			}
@@ -725,7 +776,10 @@ namespace Holsters {
 				UIVATSOn = Offsets::cloneNode(retNode, &proc);
 				UIVATSOn->m_name = BSFixedString("UIVATSOn");
 				if (UIMain != nullptr) {
-					UIMain->AttachChild((NiAVObject*)UIVATSOn, true);
+					VRSceneGraph::AttachChild(
+						UIMain,
+						UIVATSOn,
+						true);
 					UIVATSOn->flags &= 0xfffffffffffffffe;
 					UIVATSOn->m_localTransform.scale = 1;
 				}
@@ -826,7 +880,7 @@ namespace Holsters {
 			UISaveMSG = Offsets::cloneNode(retNode, &proc);
 			UISaveMSG->m_name = BSFixedString("UIINFOSAVEMESSAGE");
 			if (UIMain != nullptr) {
-				UIMain->AttachChild((NiAVObject*)UISaveMSG, true);
+				VRSceneGraph::AttachChild(UIMain, UISaveMSG, true);
 				UISaveMSG->flags &= 0xfffffffffffffffe;
 			}
 			std::thread t1(UISaveMSGTimer);
@@ -854,14 +908,19 @@ namespace Holsters {
 				proc.unk48 = Offsets::cloneAddr2;
 				HelpUI = Offsets::cloneNode(retNode, &proc);
 				HelpUI->m_name = BSFixedString(NameofMesh);
-				primaryAttachNode->AttachChild((NiAVObject*)HelpUI, true);
+				VRSceneGraph::AttachChild(
+					primaryAttachNode,
+					HelpUI,
+					true);
 				gInPowerArmor ? HelpUI->m_localTransform.scale = 1.0 : HelpUI->m_localTransform.scale = 0.9;
 				HelpUI->flags &= 0xfffffffffffffffe;
 			}
 			else if (NodeToFind){
 				NodeToFind->flags |= 0x1;
 				NodeToFind->m_localTransform.scale = 0;
-				NodeToFind->m_parent->RemoveChild(NodeToFind);
+				VRSceneGraph::RemoveChild(
+					NodeToFind->m_parent,
+					NodeToFind);
 			}
 		}
 	}

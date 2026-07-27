@@ -3,6 +3,7 @@
 #include "Holsters.h"
 #include "MenuChecker.h"
 #include "VRHook.h"
+#include "VRSceneGraph.h"
 
 #include "common/IDebugLog.h"
 #include "f4se/PluginAPI.h"
@@ -88,6 +89,13 @@ namespace LegacyBridge
 	bool OnGameLoaded() noexcept
 	{
 		try {
+			if (!VRSceneGraph::Initialize()) {
+				LogError(
+					"VirtualHolsters: scene-graph ABI gate failed; "
+					"gameplay initialization was stopped.");
+				return false;
+			}
+
 			static bool menuHandlerRegistered = false;
 			if (!menuHandlerRegistered) {
 				Holsters::MenuOpenCloseHandler::Register();

@@ -143,6 +143,7 @@ add_library(
   "Offsets.cpp"
   "Utils.cpp"
   "VRHook.cpp"
+  "VRSceneGraph.cpp"
   "hook.cpp"
   "main.cpp"
   "weaponOffset.cpp"
