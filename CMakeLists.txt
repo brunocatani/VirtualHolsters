@@ -265,7 +265,7 @@ add_test(
 
 option(
   POST_BUILD_COPY_PLUGIN
-  "Copy VirtualHolsters.dll and its PDB to a mod root."
+  "Copy VirtualHolsters.dll to a mod root."
   OFF
 )
 set(
@@ -295,12 +295,6 @@ if(POST_BUILD_COPY_PLUGIN)
       copy_if_different
       "$<TARGET_FILE:${PROJECT_NAME}>"
       "${COPY_PLUGIN_BASE_PATH}/F4SE/Plugins/"
-    COMMAND
-      ${CMAKE_COMMAND}
-      -E
-      copy_if_different
-      "$<TARGET_PDB_FILE:${PROJECT_NAME}>"
-      "${COPY_PLUGIN_BASE_PATH}/F4SE/Plugins/"
-    COMMENT "Deploying VirtualHolsters to '${COPY_PLUGIN_BASE_PATH}'"
+    COMMENT "Deploying VirtualHolsters.dll to '${COPY_PLUGIN_BASE_PATH}'"
   )
 endif()

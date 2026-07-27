@@ -73,6 +73,7 @@ Assert-Contains $cmake 'CommonLibF4::CommonLibF4' "The plugin must link CommonLi
 Assert-Contains $cmake 'OpenVR::OpenVR' "The plugin must link its independently vendored OpenVR ABI."
 Assert-Contains $cmake 'VirtualHolstersSourceRegression' "The source regression must be enforced by the normal build."
 Assert-Contains $cmake 'POST_BUILD_COPY_PLUGIN' "The auto-deploying build path must remain available."
+Assert-NotContains $cmake 'TARGET_PDB_FILE' "Auto-deploy must copy only VirtualHolsters.dll."
 Assert-NotContains $cmake 'INTERPROCEDURAL_OPTIMIZATION_RELEASE\s+TRUE' "LTO must remain disabled."
 
 Assert-Contains $exports '(?m)^\s*F4SEPlugin_Query\s*$' "F4SEPlugin_Query must be exported."
