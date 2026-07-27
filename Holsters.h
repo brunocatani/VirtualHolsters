@@ -129,6 +129,7 @@ namespace Holsters {
 	
 	bool initBoneTree();
 	void MainLoop();
+	void resetInteractionState();
 	void checkArmor();
 	void checkfists();
 	void handlePowerArmor();
@@ -166,6 +167,8 @@ namespace Holsters {
 	void SetPointingHand();
 	void RestorePointingHand();
 	void detectHolsterSphere();
+	bool isHandInHolsterZone(bool isLeft);
+	UInt32 getHandHolster(bool isLeft);
 	void displayHolstersSphere(UInt32);
 	void createAllHolsterSpheres();
 	void updateSpheresForPAEvent();

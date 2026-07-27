@@ -32,6 +32,8 @@ namespace VRHook
 		[[nodiscard]] bool setVRControllerState() noexcept;
 		[[nodiscard]] vr::VRControllerState_t getControllerState(
 			TrackerType tracker) const noexcept;
+		[[nodiscard]] bool isControllerStateAvailable(
+			TrackerType tracker) const noexcept;
 
 		void StartHaptics(
 			unsigned int trackedControllerId,
@@ -69,6 +71,8 @@ namespace VRHook
 
 		std::uint32_t leftPacket_{};
 		std::uint32_t rightPacket_{};
+		bool leftControllerAvailable_{};
+		bool rightControllerAvailable_{};
 		vr::IVRSystem* system_{};
 		vr::IVRCompositor* compositor_{};
 		vr::VRControllerState_t rightControllerState_{};

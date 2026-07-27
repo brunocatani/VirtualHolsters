@@ -30,6 +30,8 @@ function Assert-NotContains {
 
 $main = Get-Content -LiteralPath (Join-Path $Root "main.cpp") -Raw
 $hook = Get-Content -LiteralPath (Join-Path $Root "hook.cpp") -Raw
+$holsters = Get-Content -LiteralPath (Join-Path $Root "Holsters.cpp") -Raw
+$interaction = Get-Content -LiteralPath (Join-Path $Root "HolsterInteraction.h") -Raw
 $vrHeader = Get-Content -LiteralPath (Join-Path $Root "VRHook.h") -Raw
 $vrSource = Get-Content -LiteralPath (Join-Path $Root "VRHook.cpp") -Raw
 $cmake = Get-Content -LiteralPath (Join-Path $Root "CMakeLists.txt") -Raw
@@ -52,6 +54,7 @@ Assert-Contains $main '(?s)F4SEPlugin_Load\(.+?\)\s+noexcept' "Load must not pro
 Assert-Contains $main 'F4SE::Init\(a_f4se,\s*false\)' "Load must initialize CommonLibF4VR."
 Assert-Contains $main 'kPreLoadGame' "Lifecycle must close the gameplay gate before loading a save."
 Assert-Contains $main 'kPostLoadGame' "Lifecycle must rearm after loading a save."
+Assert-Contains $main 'OnGameplaySuspended\(\)' "Pre-load lifecycle must cancel active holster gestures."
 
 Assert-Contains $hook "0x00D8'405E" "The unsafe Windows message-pump hook must be replaced by the verified frame callsite."
 Assert-Contains $hook "0x00D3'C820" "The verified vanilla call target must remain explicit."
@@ -68,10 +71,19 @@ Assert-Contains $vrSource 'vr::VRSystem\(\)' "OpenVR access must be borrowed fro
 Assert-Contains $vrSource 'TriggerHapticPulse' "Haptics must use the direct OpenVR ABI."
 Assert-NotContains $productionText 'FO4VRTools|RequestOpenVRHookManagerObject|GetVRHookManager' "Production source must not depend on FO4VRTools."
 Assert-NotContains ($vrHeader + $vrSource) '\bVR_Init\s*\(|\bVR_Shutdown\s*\(' "VirtualHolsters must not own OpenVR initialization or shutdown."
+Assert-Contains $vrHeader 'isControllerStateAvailable' "Per-hand input validity must remain explicit."
+
+Assert-Contains $holsters 's_leftHand\.gesture\.Update' "Gameplay must update an independent left-hand gesture."
+Assert-Contains $holsters 's_rightHand\.gesture\.Update' "Gameplay must update an independent right-hand gesture."
+Assert-Contains $holsters 'Interaction::SelectRelease' "Release arbitration must remain explicit."
+Assert-NotContains $holsters 'HolsterWButtonPressed\s*&&' "Holster actions must not fire from a held-button level."
+Assert-Contains $interaction 'return\s*\{\s*input\.candidateSlot\s*\};' "The release-frame zone must remain authoritative."
+Assert-Contains $holsters 'isHandInHolsterZone\(isLeft\)' "The public API must preserve per-hand zone identity."
 
 Assert-Contains $cmake 'CommonLibF4::CommonLibF4' "The plugin must link CommonLibF4VR."
 Assert-Contains $cmake 'OpenVR::OpenVR' "The plugin must link its independently vendored OpenVR ABI."
 Assert-Contains $cmake 'VirtualHolstersSourceRegression' "The source regression must be enforced by the normal build."
+Assert-Contains $cmake 'VirtualHolstersInteractionTests' "The release gesture policy must retain executable regression coverage."
 Assert-Contains $cmake 'POST_BUILD_COPY_PLUGIN' "The auto-deploying build path must remain available."
 Assert-NotContains $cmake 'TARGET_PDB_FILE' "Auto-deploy must copy only VirtualHolsters.dll."
 Assert-NotContains $cmake 'INTERPROCEDURAL_OPTIMIZATION_RELEASE\s+TRUE' "LTO must remain disabled."

@@ -8,6 +8,7 @@ namespace LegacyBridge
 
 	bool RegisterPapyrus(void* papyrusInterface) noexcept;
 	bool OnGameLoaded() noexcept;
+	void OnGameplaySuspended() noexcept;
 	bool OnPostLoadGame() noexcept;
 	void RunFrame();
 }

@@ -111,6 +111,17 @@ namespace LegacyBridge
 		}
 	}
 
+	void OnGameplaySuspended() noexcept
+	{
+		try {
+			Holsters::resetInteractionState();
+		} catch (const std::exception& error) {
+			ReportException("gameplay suspension", error.what());
+		} catch (...) {
+			ReportException("gameplay suspension", nullptr);
+		}
+	}
+
 	bool OnPostLoadGame() noexcept
 	{
 		try {
