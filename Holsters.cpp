@@ -5,7 +5,6 @@
 #include "utils.h"
 #include "Offsets.h"
 #include "weaponOffset.h"
-#include "VRHookAPI.h"
 #include "VRHook.h"
 #include "VirtualHolstersAPI.h"
 #include "f4se/GameMenus.h"
@@ -17,11 +16,6 @@
 #include "f4se/NiNodes.h"
 #include "f4se/GameReferences.h"
 #include "f4se/BSCollision.h"
-
-PluginHandle g_pluginHandle = kPluginHandle_Invalid;
-F4SEPapyrusInterface* g_papyrus = NULL;
-F4SEMessagingInterface* g_messaging = NULL;
-OpenVRHookManagerAPI* vrHook;
 
 bool gPlayerisSneaking = false;
 bool gInPowerArmor = false;
@@ -227,7 +221,6 @@ namespace Holsters {
 				_isPipboyOpen = false;
 			}
 			//int SitState = Offsets::GetSitState((*g_gameVM)->m_virtualMachine, 0, *g_player);
-			//g_messaging->Dispatch(g_pluginHandle, 17, nullptr, 0, "VirtualReloads");
 		}
 	}
 
@@ -335,7 +328,7 @@ namespace Holsters {
 
 	void VRButtonsMain() {
 		if (VRHook::g_vrHook != nullptr) {
-			VRHook::g_vrHook->setVRControllerState();
+			(void)VRHook::g_vrHook->setVRControllerState();
 			// Gameplay Controls 
 			if (!_isConfigModeActive) {
 				uint64_t dominantHand = (gIsRightHanded ? VRHook::g_vrHook->getControllerState(VRHook::VRSystem::TrackerType::Right).ulButtonPressed : VRHook::g_vrHook->getControllerState(VRHook::VRSystem::TrackerType::Left).ulButtonPressed);
@@ -613,13 +606,14 @@ namespace Holsters {
 		_MESSAGE("Starting up Virtual Holsters");
 		nextHolsterHandle = 1;
 		nextWeaponHandle = 1;
-		vrHook = RequestOpenVRHookManagerObject();
 		if (VRHook::g_vrHook != nullptr) {
-			VRHook::g_vrHook->setVRControllerState();
+			(void)VRHook::g_vrHook->setVRControllerState();
 		}
 		else {
 			VRHook::InitVRSystem();
-			VRHook::g_vrHook->setVRControllerState();
+			if (VRHook::g_vrHook != nullptr) {
+				(void)VRHook::g_vrHook->setVRControllerState();
+			}
 		}
 		loadConfigFiles();
 		_fistRun = true;
@@ -1614,7 +1608,7 @@ namespace Holsters {
 						UInt32 device = 1;
 						curDevice = device;
 						if (ghapticsEnabled) {
-							gIsRightHanded ? vrHook->StartHaptics(2, 0.05, 0.3) : vrHook->StartHaptics(1, 0.05, 0.3);
+							gIsRightHanded ? VRHook::g_vrHook->StartHaptics(2, 0.05, 0.3) : VRHook::g_vrHook->StartHaptics(1, 0.05, 0.3);
 						}
 						isHolsterIntersected = true;
 						if (c_ActivationDisabled) {

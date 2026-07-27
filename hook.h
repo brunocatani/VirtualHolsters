@@ -1,12 +1,7 @@
 #pragma once
-#pragma once
 
-#include "f4se/PluginAPI.h"  // SKSEInterface, PluginInfo
-#include "f4sE_common/Relocation.h"
-#include "F4SE_common/SafeWrite.h"
-#include "F4SE_common/BranchTrampoline.h"
-
-
-
-void hookMain();
-void updateCounter();
+namespace MainLoopHook
+{
+	[[nodiscard]] bool Install() noexcept;
+	void SetGameplayReady(bool ready) noexcept;
+}

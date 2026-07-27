@@ -1,0 +1,52 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_CXX_FLAGS": "/EHsc /MP /external:anglebrackets /external:W0 $penv{CXXFLAGS}"
+      },
+      "environment": {
+        "VCPKG_ROOT": "C:/vcpkg"
+      }
+    },
+    {
+      "name": "fast",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-fast",
+      "cacheVariables": {
+        "POST_BUILD_COPY_PLUGIN": false
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "fast",
+      "configurePreset": "fast",
+      "configuration": "Release",
+      "jobs": 1
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "fast",
+      "configurePreset": "fast",
+      "configuration": "Release",
+      "execution": {
+        "jobs": 4,
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}
