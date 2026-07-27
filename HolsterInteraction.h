@@ -18,7 +18,15 @@ namespace Holsters::Interaction
 	{
 		kNeedsRelease,
 		kIdle,
-		kHeld
+		kHeld,
+		kConsumed
+	};
+
+	enum class GestureActionKind : std::uint8_t
+	{
+		kNone,
+		kReleaseInZone,
+		kPullOut
 	};
 
 	struct GestureInput
@@ -27,22 +35,51 @@ namespace Holsters::Interaction
 		bool gameplayEnabled{};
 		bool buttonHeld{};
 		Slot candidateSlot{};
+		bool pullOutEligible{};
 	};
 
 	struct GestureDecision
 	{
 		Slot releasedSlot{};
+		Slot pulledSlot{};
 
 		[[nodiscard]] bool HasRelease() const noexcept
 		{
 			return releasedSlot != kNoSlot;
 		}
+
+		[[nodiscard]] bool HasPullOut() const noexcept
+		{
+			return pulledSlot != kNoSlot;
+		}
+
+		[[nodiscard]] bool HasAction() const noexcept
+		{
+			return HasRelease() || HasPullOut();
+		}
+
+		[[nodiscard]] GestureActionKind Kind() const noexcept
+		{
+			if (HasPullOut()) {
+				return GestureActionKind::kPullOut;
+			}
+			return HasRelease() ?
+				GestureActionKind::kReleaseInZone :
+				GestureActionKind::kNone;
+		}
+
+		[[nodiscard]] Slot ActionSlot() const noexcept
+		{
+			return HasPullOut() ? pulledSlot : releasedSlot;
+		}
 	};
 
-	// A gesture is deliberately level-driven. OpenVR can attach while a button
-	// is already down, so startup and every interruption require observing an
-	// unpressed sample before another release can produce an action.
-	class ReleaseGesture
+	// OpenVR can attach while a button is already down, so startup and every
+	// interruption require observing an unpressed sample before another action.
+	// Release uses the release-frame zone. Pull-out is stricter: it only arms
+	// when the press starts inside an eligible occupied slot, then fires once
+	// when that same slot is exited while the button remains held.
+	class HolsterGesture
 	{
 	public:
 		[[nodiscard]] GestureDecision Update(
@@ -64,12 +101,23 @@ namespace Holsters::Interaction
 				if (input.buttonHeld) {
 					phase_ = GesturePhase::kHeld;
 					candidateSlot_ = input.candidateSlot;
+					pullOutSlot_ = input.pullOutEligible ?
+						input.candidateSlot :
+						kNoSlot;
 				}
 				return {};
 
 			case GesturePhase::kHeld:
 				if (input.buttonHeld) {
 					candidateSlot_ = input.candidateSlot;
+					if (pullOutSlot_ != kNoSlot &&
+						input.candidateSlot != pullOutSlot_) {
+						const Slot pulledSlot = pullOutSlot_;
+						phase_ = GesturePhase::kConsumed;
+						candidateSlot_ = kNoSlot;
+						pullOutSlot_ = kNoSlot;
+						return { kNoSlot, pulledSlot };
+					}
 					return {};
 				}
 
@@ -77,7 +125,14 @@ namespace Holsters::Interaction
 				// before release a cancellation and entering while held valid.
 				phase_ = GesturePhase::kIdle;
 				candidateSlot_ = kNoSlot;
-				return { input.candidateSlot };
+				pullOutSlot_ = kNoSlot;
+				return { input.candidateSlot, kNoSlot };
+
+			case GesturePhase::kConsumed:
+				if (!input.buttonHeld) {
+					phase_ = GesturePhase::kIdle;
+				}
+				return {};
 			}
 
 			Reset();
@@ -88,6 +143,7 @@ namespace Holsters::Interaction
 		{
 			phase_ = GesturePhase::kNeedsRelease;
 			candidateSlot_ = kNoSlot;
+			pullOutSlot_ = kNoSlot;
 		}
 
 		[[nodiscard]] GesturePhase Phase() const noexcept
@@ -109,30 +165,47 @@ namespace Holsters::Interaction
 	private:
 		GesturePhase phase_{ GesturePhase::kNeedsRelease };
 		Slot candidateSlot_{ kNoSlot };
+		Slot pullOutSlot_{ kNoSlot };
 	};
 
-	struct HandRelease
+	struct HandAction
 	{
-		bool hasRelease{};
+		GestureActionKind kind{ GestureActionKind::kNone };
 		bool isLeft{};
 		Slot slot{};
+
+		[[nodiscard]] bool HasAction() const noexcept
+		{
+			return kind != GestureActionKind::kNone &&
+				slot != kNoSlot;
+		}
 	};
 
-	[[nodiscard]] inline HandRelease SelectRelease(
+	[[nodiscard]] inline HandAction SelectAction(
 		const GestureDecision& left,
 		const GestureDecision& right,
 		const bool preferRight) noexcept
 	{
-		if (left.HasRelease() && right.HasRelease()) {
+		const auto makeAction = [](
+								 const GestureDecision& decision,
+								 const bool isLeft) noexcept {
+			return HandAction{
+				decision.Kind(),
+				isLeft,
+				decision.ActionSlot()
+			};
+		};
+
+		if (left.HasAction() && right.HasAction()) {
 			return preferRight ?
-				HandRelease{ true, false, right.releasedSlot } :
-				HandRelease{ true, true, left.releasedSlot };
+				makeAction(right, false) :
+				makeAction(left, true);
 		}
-		if (left.HasRelease()) {
-			return { true, true, left.releasedSlot };
+		if (left.HasAction()) {
+			return makeAction(left, true);
 		}
-		if (right.HasRelease()) {
-			return { true, false, right.releasedSlot };
+		if (right.HasAction()) {
+			return makeAction(right, false);
 		}
 		return {};
 	}

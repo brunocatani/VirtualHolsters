@@ -16,54 +16,61 @@ namespace
 	}
 
 	Holsters::Interaction::GestureDecision Update(
-		Holsters::Interaction::ReleaseGesture& gesture,
+		Holsters::Interaction::HolsterGesture& gesture,
 		const bool available,
 		const bool enabled,
 		const bool held,
-		const Holsters::Interaction::Slot slot)
+		const Holsters::Interaction::Slot slot,
+		const bool pullOutEligible = false)
 	{
-		return gesture.Update({ available, enabled, held, slot });
+		return gesture.Update({
+			available,
+			enabled,
+			held,
+			slot,
+			pullOutEligible
+		});
 	}
 
 	void TestStartupRequiresRelease()
 	{
 		using namespace Holsters::Interaction;
 
-		ReleaseGesture gesture;
+		HolsterGesture gesture;
 		Check(
-			!Update(gesture, true, true, true, 1).HasRelease(),
+			!Update(gesture, true, true, true, 1, true).HasAction(),
 			"startup while held must not act");
 		Check(
-			!Update(gesture, true, true, false, 1).HasRelease(),
+			!Update(gesture, true, true, false, 1, true).HasAction(),
 			"the startup release must only arm the gesture");
 		Check(
 			gesture.Phase() == GesturePhase::kIdle,
 			"startup release must leave the gesture armed");
 		Check(
-			!Update(gesture, true, true, true, 1).HasRelease(),
+			!Update(gesture, true, true, true, 1, true).HasAction(),
 			"pressing inside a zone must not act");
 		Check(
-			Update(gesture, true, true, false, 1).releasedSlot == 1,
+			Update(gesture, true, true, false, 1, true).releasedSlot == 1,
 			"a later release inside the zone must act");
 	}
 
-	void TestReleaseOnlyGesture()
+	void TestReleaseInZone()
 	{
 		using namespace Holsters::Interaction;
 
-		ReleaseGesture gesture;
+		HolsterGesture gesture;
 		Update(gesture, true, true, false, kNoSlot);
 		Check(
-			!Update(gesture, true, true, true, 3).HasRelease(),
+			!Update(gesture, true, true, true, 3).HasAction(),
 			"press inside must not act");
 		Check(
-			!Update(gesture, true, true, true, 3).HasRelease(),
+			!Update(gesture, true, true, true, 3).HasAction(),
 			"hold inside must not act");
 		Check(
 			Update(gesture, true, true, false, 3).releasedSlot == 3,
 			"release inside must act exactly once");
 		Check(
-			!Update(gesture, true, true, false, 3).HasRelease(),
+			!Update(gesture, true, true, false, 3).HasAction(),
 			"an idle frame after release must not repeat the action");
 	}
 
@@ -71,45 +78,134 @@ namespace
 	{
 		using namespace Holsters::Interaction;
 
-		ReleaseGesture gesture;
+		HolsterGesture gesture;
 		Update(gesture, true, true, false, kNoSlot);
 		Update(gesture, true, true, true, kNoSlot);
 		Check(
-			!Update(gesture, true, true, true, 4).HasRelease(),
+			!Update(gesture, true, true, true, 4).HasAction(),
 			"entering a zone while held must not act early");
 		Check(
 			Update(gesture, true, true, false, 4).releasedSlot == 4,
 			"entering while held then releasing in-zone must act");
 
 		Update(gesture, true, true, true, 4);
-		Update(gesture, true, true, true, kNoSlot);
 		Check(
-			!Update(gesture, true, true, false, kNoSlot).HasRelease(),
-			"leaving the zone before release must cancel");
+			!Update(
+				gesture,
+				true,
+				true,
+				true,
+				kNoSlot).HasAction(),
+			"an ineligible held exit must not act");
+		Check(
+			!Update(
+				gesture,
+				true,
+				true,
+				false,
+				kNoSlot).HasAction(),
+			"an ineligible exit followed by release must cancel");
+	}
+
+	void TestPullOutGesture()
+	{
+		using namespace Holsters::Interaction;
+
+		HolsterGesture gesture;
+		Update(gesture, true, true, false, kNoSlot);
+		Check(
+			!Update(gesture, true, true, true, 3, true).HasAction(),
+			"pressing an occupied slot must only arm pull-out");
+		Check(
+			!Update(gesture, true, true, true, 3, true).HasAction(),
+			"holding inside the armed slot must not equip early");
+
+		const auto pullOut =
+			Update(gesture, true, true, true, kNoSlot);
+		Check(
+			pullOut.HasPullOut() &&
+				!pullOut.HasRelease() &&
+				pullOut.pulledSlot == 3,
+			"leaving the armed slot while held must request equip");
+		Check(
+			gesture.Phase() == GesturePhase::kConsumed,
+			"pull-out must consume the current press");
+		Check(
+			!Update(gesture, true, true, true, 3, true).HasAction(),
+			"returning inside during a consumed press must not repeat");
+		Check(
+			!Update(gesture, true, true, false, 3, true).HasAction(),
+			"release after pull-out must not also trigger release-in-zone");
+		Check(
+			gesture.Phase() == GesturePhase::kIdle,
+			"release after pull-out must rearm the next press");
+	}
+
+	void TestPullOutRequiresEligiblePressInside()
+	{
+		using namespace Holsters::Interaction;
+
+		HolsterGesture gesture;
+		Update(gesture, true, true, false, kNoSlot);
+		Update(gesture, true, true, true, kNoSlot);
+		Update(gesture, true, true, true, 4, true);
+		Check(
+			!Update(
+				gesture,
+				true,
+				true,
+				true,
+				kNoSlot,
+				true).HasAction(),
+			"entering while already held must not arm pull-out");
+		Update(gesture, true, true, false, kNoSlot);
+
+		Update(gesture, true, true, true, 4, false);
+		Check(
+			!Update(
+				gesture,
+				true,
+				true,
+				true,
+				kNoSlot,
+				true).HasAction(),
+			"an ineligible slot must not arm pull-out");
+		Update(gesture, true, true, false, kNoSlot);
+
+		Update(gesture, true, true, true, 4, true);
+		const auto release =
+			Update(gesture, true, true, false, 4, true);
+		Check(
+			release.HasRelease() && !release.HasPullOut(),
+			"release inside must remain distinct from pull-out");
 	}
 
 	void TestInterruptionAndTrackingLossRearm()
 	{
 		using namespace Holsters::Interaction;
 
-		ReleaseGesture gesture;
+		HolsterGesture gesture;
 		Update(gesture, true, true, false, kNoSlot);
-		Update(gesture, true, true, true, 2);
-		Update(gesture, true, false, true, 2);
+		Update(gesture, true, true, true, 2, true);
+		const auto interrupted =
+			Update(gesture, true, false, true, kNoSlot, true);
 		Check(
-			gesture.Phase() == GesturePhase::kNeedsRelease,
+			!interrupted.HasAction() &&
+				gesture.Phase() == GesturePhase::kNeedsRelease,
 			"gameplay interruption must cancel and disarm");
 		Check(
-			!Update(gesture, true, true, false, 2).HasRelease(),
+			!Update(gesture, true, true, false, 2).HasAction(),
 			"release after an interruption must only rearm");
 
-		Update(gesture, true, true, true, 2);
-		Update(gesture, false, true, true, 2);
+		Update(gesture, true, true, true, 2, true);
+		const auto trackingLost =
+			Update(gesture, false, true, true, kNoSlot, true);
 		Check(
-			gesture.Phase() == GesturePhase::kNeedsRelease,
+			!trackingLost.HasAction() &&
+				gesture.Phase() == GesturePhase::kNeedsRelease,
 			"tracking loss must cancel and disarm");
 		Check(
-			!Update(gesture, true, true, false, 2).HasRelease(),
+			!Update(gesture, true, true, false, 2).HasAction(),
 			"release after tracking recovery must only rearm");
 
 		Update(gesture, true, true, true, 2);
@@ -122,8 +218,8 @@ namespace
 	{
 		using namespace Holsters::Interaction;
 
-		ReleaseGesture left;
-		ReleaseGesture right;
+		HolsterGesture left;
+		HolsterGesture right;
 		Update(left, true, true, false, kNoSlot);
 		Update(right, true, true, false, kNoSlot);
 		Update(left, true, true, true, 1);
@@ -143,20 +239,23 @@ namespace
 			"right-hand state must release independently");
 
 		const auto preferRight =
-			SelectRelease({ 3 }, { 4 }, true);
+			SelectAction({ 3, kNoSlot }, { kNoSlot, 4 }, true);
 		Check(
-			preferRight.hasRelease &&
+			preferRight.HasAction() &&
+				preferRight.kind == GestureActionKind::kPullOut &&
 				!preferRight.isLeft &&
 				preferRight.slot == 4,
-			"simultaneous releases must prefer configured right hand");
+			"simultaneous actions must prefer configured right hand");
 
 		const auto preferLeft =
-			SelectRelease({ 3 }, { 4 }, false);
+			SelectAction({ 3, kNoSlot }, { kNoSlot, 4 }, false);
 		Check(
-			preferLeft.hasRelease &&
+			preferLeft.HasAction() &&
+				preferLeft.kind ==
+					GestureActionKind::kReleaseInZone &&
 				preferLeft.isLeft &&
 				preferLeft.slot == 3,
-			"simultaneous releases must prefer configured left hand");
+			"simultaneous actions must prefer configured left hand");
 	}
 
 	void TestStableZoneSelection()
@@ -194,8 +293,10 @@ namespace
 int main()
 {
 	TestStartupRequiresRelease();
-	TestReleaseOnlyGesture();
+	TestReleaseInZone();
 	TestEnterAndExitWhileHeld();
+	TestPullOutGesture();
+	TestPullOutRequiresEligiblePressInside();
 	TestInterruptionAndTrackingLossRearm();
 	TestIndependentHandsAndSimultaneousPriority();
 	TestStableZoneSelection();

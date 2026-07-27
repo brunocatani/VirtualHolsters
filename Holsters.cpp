@@ -145,9 +145,16 @@ namespace Holsters {
 
 		struct HandInteractionRuntime
 		{
-			Interaction::ReleaseGesture gesture{};
+			Interaction::HolsterGesture gesture{};
 			UInt32 zone{};
 			bool anchorAvailable{};
+		};
+
+		struct HolsterActionState
+		{
+			bool available{};
+			bool occupied{};
+			bool hasEquippedWeapon{};
 		};
 
 		struct GrabSettingSnapshot
@@ -319,20 +326,23 @@ namespace Holsters {
 			}
 		}
 
-		bool IsHolsterActionEligible(const UInt32 slot)
+		HolsterActionState GetHolsterActionState(const UInt32 slot)
 		{
 			if (slot < 1 || slot > kMaximumHolsterSlots ||
 				!HolsterContainers[slot] ||
 				!(*g_player) ||
 				!(*g_gameVM) ||
 				!(*g_gameVM)->m_virtualMachine) {
-				return false;
+				return {};
 			}
 
-			const bool occupied = holsteredWeapNames[slot] != "Empty";
-			bool hasEquippedWeapon = false;
+			HolsterActionState state{
+				true,
+				holsteredWeapNames[slot] != "Empty",
+				false
+			};
 			if ((*g_player)->actorState.IsWeaponDrawn()) {
-				hasEquippedWeapon =
+				state.hasEquippedWeapon =
 					Offsets::GetEquippedWeapon(
 						(*g_gameVM)->m_virtualMachine,
 						0,
@@ -340,7 +350,38 @@ namespace Holsters {
 						0) != nullptr;
 			}
 
-			return hasEquippedWeapon ? !occupied : occupied;
+			return state;
+		}
+
+		bool IsReleaseActionEligible(const UInt32 slot)
+		{
+			const auto state = GetHolsterActionState(slot);
+			return state.available &&
+				(state.hasEquippedWeapon ?
+					 !state.occupied :
+					 state.occupied);
+		}
+
+		bool IsPullOutActionEligible(const UInt32 slot)
+		{
+			const auto state = GetHolsterActionState(slot);
+			return state.available &&
+				state.occupied &&
+				!state.hasEquippedWeapon;
+		}
+
+		bool IsSelectedActionEligible(
+			const Interaction::HandAction& action)
+		{
+			switch (action.kind) {
+			case Interaction::GestureActionKind::kReleaseInZone:
+				return IsReleaseActionEligible(action.slot);
+			case Interaction::GestureActionKind::kPullOut:
+				return IsPullOutActionEligible(action.slot);
+			case Interaction::GestureActionKind::kNone:
+				return false;
+			}
+			return false;
 		}
 	}
 
@@ -592,21 +633,43 @@ namespace Holsters {
 
 			const auto holsterButtonMask = vr::ButtonMaskFromId(
 				static_cast<vr::EVRButtonId>(c_holsterButtonID));
+			const bool leftHolsterHeld =
+				(leftButtons & holsterButtonMask) != 0;
+			const bool rightHolsterHeld =
+				(rightButtons & holsterButtonMask) != 0;
 			const bool gameplayEnabled =
 				!_isConfigModeActive &&
 				!isGameStopped() &&
 				!_WeaponHolsterInProgress;
-			const auto leftRelease = s_leftHand.gesture.Update({
+			const bool leftCanArmPullOut =
+				gameplayEnabled &&
+				leftControllerAvailable &&
+				s_leftHand.anchorAvailable &&
+				leftHolsterHeld &&
+				s_leftHand.gesture.Phase() ==
+					Interaction::GesturePhase::kIdle &&
+				IsPullOutActionEligible(s_leftHand.zone);
+			const bool rightCanArmPullOut =
+				gameplayEnabled &&
+				rightControllerAvailable &&
+				s_rightHand.anchorAvailable &&
+				rightHolsterHeld &&
+				s_rightHand.gesture.Phase() ==
+					Interaction::GesturePhase::kIdle &&
+				IsPullOutActionEligible(s_rightHand.zone);
+			const auto leftDecision = s_leftHand.gesture.Update({
 				leftControllerAvailable && s_leftHand.anchorAvailable,
 				gameplayEnabled,
-				(leftButtons & holsterButtonMask) != 0,
-				s_leftHand.zone
+				leftHolsterHeld,
+				s_leftHand.zone,
+				leftCanArmPullOut
 			});
-			const auto rightRelease = s_rightHand.gesture.Update({
+			const auto rightDecision = s_rightHand.gesture.Update({
 				rightControllerAvailable && s_rightHand.anchorAvailable,
 				gameplayEnabled,
-				(rightButtons & holsterButtonMask) != 0,
-				s_rightHand.zone
+				rightHolsterHeld,
+				s_rightHand.zone,
+				rightCanArmPullOut
 			});
 
 			SetActivationSuppressed(
@@ -638,15 +701,15 @@ namespace Holsters {
 					fistsPressed = true;
 				}
 
-				const auto release = Interaction::SelectRelease(
-					leftRelease,
-					rightRelease,
+				const auto action = Interaction::SelectAction(
+					leftDecision,
+					rightDecision,
 					gIsRightHanded);
-				if (release.hasRelease &&
+				if (action.HasAction() &&
 					gameplayEnabled &&
-					IsHolsterActionEligible(release.slot)) {
-					gCurHolster = release.slot;
-					WeapSort(release.slot);
+					IsSelectedActionEligible(action)) {
+					gCurHolster = action.slot;
+					WeapSort(action.slot);
 					if (c_ActivationDisabled) {
 						MenuCheck = true;
 						std::thread t2(CheckMenusTimer);
