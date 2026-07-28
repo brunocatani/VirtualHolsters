@@ -41,6 +41,8 @@ namespace VRHook
 		if (!currentSystem) {
 			system_ = nullptr;
 			compositor_ = nullptr;
+			leftControllerAvailable_ = false;
+			rightControllerAvailable_ = false;
 			return false;
 		}
 
@@ -148,6 +150,8 @@ namespace VRHook
 		if (!RefreshInterfaces()) {
 			leftControllerState_ = {};
 			rightControllerState_ = {};
+			leftControllerAvailable_ = false;
+			rightControllerAvailable_ = false;
 			return false;
 		}
 
@@ -170,6 +174,8 @@ namespace VRHook
 				rightIndex,
 				&rightControllerState_,
 				sizeof(rightControllerState_));
+		leftControllerAvailable_ = leftValid;
+		rightControllerAvailable_ = rightValid;
 
 		if (!leftValid) {
 			leftControllerState_ = {};
@@ -196,6 +202,19 @@ namespace VRHook
 			return rightControllerState_;
 		default:
 			return {};
+		}
+	}
+
+	bool VRSystem::isControllerStateAvailable(
+		const TrackerType tracker) const noexcept
+	{
+		switch (tracker) {
+		case Left:
+			return leftControllerAvailable_;
+		case Right:
+			return rightControllerAvailable_;
+		default:
+			return false;
 		}
 	}
 

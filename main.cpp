@@ -50,6 +50,7 @@ namespace
 			}
 			break;
 		case F4SE::MessagingInterface::kPreLoadGame:
+			LegacyBridge::OnGameplaySuspended();
 			MainLoopHook::SetGameplayReady(false);
 			break;
 		case F4SE::MessagingInterface::kPostLoadGame:

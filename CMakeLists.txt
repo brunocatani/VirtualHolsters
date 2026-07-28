@@ -141,8 +141,10 @@ add_library(
   "MenuChecker.cpp"
   "MiscStructs.cpp"
   "Offsets.cpp"
+  "RIWCompatibility.cpp"
   "Utils.cpp"
   "VRHook.cpp"
+  "VRSceneGraph.cpp"
   "hook.cpp"
   "main.cpp"
   "weaponOffset.cpp"
@@ -251,6 +253,31 @@ add_custom_target(
 )
 add_dependencies(${PROJECT_NAME} VirtualHolstersSourceRegression)
 
+add_executable(
+  VirtualHolstersInteractionTests
+  "tests/HolsterInteractionTests.cpp"
+)
+target_compile_features(
+  VirtualHolstersInteractionTests
+  PRIVATE
+    cxx_std_23
+)
+target_include_directories(
+  VirtualHolstersInteractionTests
+  PRIVATE
+    "${ROOT_DIR}"
+)
+target_compile_options(
+  VirtualHolstersInteractionTests
+  PRIVATE
+    /sdl
+    /utf-8
+    /permissive-
+    /Zc:__cplusplus
+    /Zc:preprocessor
+    /W4
+)
+
 enable_testing()
 add_test(
   NAME VirtualHolstersSourceRegression
@@ -261,6 +288,10 @@ add_test(
     "${ROOT_DIR}/tests/SourceTests.ps1"
     -Root
     "${ROOT_DIR}"
+)
+add_test(
+  NAME VirtualHolstersInteractionTests
+  COMMAND VirtualHolstersInteractionTests
 )
 
 option(

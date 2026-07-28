@@ -1,4 +1,6 @@
 #include "InvSorting.h"
+#include "Holsters.h"
+#include "RIWCompatibility.h"
 
 namespace Holsters {
 	RelocAddr<std::uint64_t*> g_ActorEquipManager(0x5a38bf8);
@@ -25,6 +27,11 @@ namespace Holsters {
 	};
 
 	void WeapCheck(int i) {
+		if (i < 1 || i > 7 ||
+			!isHolsterSlotEnabled(i) ||
+			!HolsterContainers[i]) {
+			return;
+		}
 		std::string holsterName;
 		BGSInventoryList* holsterINV = HolsterContainers[i]->inventoryList;
 		BGSInventoryList* PlayerINV = (*g_player)->inventoryList;
@@ -86,7 +93,12 @@ namespace Holsters {
 		return;
 	}
 
-	void WeapSort(int handle) {
+	void WeapSort(int handle, const bool requestingHandIsLeft) {
+		if (handle < 1 || handle > 7 ||
+			!isHolsterSlotEnabled(handle) ||
+			!HolsterContainers[handle]) {
+			return;
+		}
 		ExtraTextDisplayData* swapETDD = nullptr;
 		ExtraTextDisplayData* Currentholster = nullptr;
 		std::string holsterName;
@@ -204,6 +216,9 @@ namespace Holsters {
 					//}
 					//else {
 					Offsets::EquipObject(*g_ActorEquipManager, *g_player, instance, INVSnapShot.TaggedWeapStackID, 1, equipSlot, true, false, true, true, false);
+					RIWCompatibility::QueueEquippedWeaponHand(
+						requestingHandIsLeft,
+						INVSnapShot.Taggedform->formID);
 					//}
 					nDestoryWeapon(handle, false, true);
 					if (holsterINV) {
@@ -257,6 +272,13 @@ namespace Holsters {
 	}
 
 	void addHolster(int handle, std::string weapName, TESForm* baseForm, TESObjectREFR* object, bool isMeleeW) {
+		if (handle < 1 || handle > 7 ||
+			!isHolsterSlotEnabled(handle) ||
+			!HolsterContainers[handle] ||
+			!baseForm ||
+			!object) {
+			return;
+		}
 		nRegisterWeapon(baseForm->GetFullName(), baseForm, object, handle, isMeleeW);
 		BGSInventoryList* holsterINV = HolsterContainers[handle]->inventoryList;
 		if (holsterINV) {
@@ -467,6 +489,10 @@ namespace Holsters {
 		bool isFirstRun = true;
 		BGSInventoryList* playerINV = (*g_player)->inventoryList;
 		for (int i = 1; i < 8; i++) {
+			if (!HolsterContainers[i]) {
+				holsteredWeapNames[i] = "Empty";
+				continue;
+			}
 			BGSInventoryList* holsterINV = HolsterContainers[i]->inventoryList;
 			if (holsterINV) { // Holster Inventory Located - Proceed As Normal.
 				holsterINV->inventoryLock.LockForReadAndWrite();
@@ -477,7 +503,16 @@ namespace Holsters {
 					std::string mess2 = "------------ Holster Status: " + name;
 					_MESSAGE(mess.c_str());
 					_MESSAGE(mess2.c_str());
-					holsteredWeapNames[i] = CurrentETDD->name;
+					if (isHolsterSlotEnabled(i)) {
+						holsteredWeapNames[i] = CurrentETDD->name;
+					}
+					else {
+						CurrentETDD->name = "Empty";
+						CurrentETDD->nameLength = 5;
+						CurrentETDD->type = -2;
+						holsteredWeapNames[i] = "Empty";
+						_MESSAGE("------------ Disabled holster association cleared");
+					}
 				}
 				else {
 					std::string mess = "-------- ETDD Link Failed For Holster0" + std::to_string(i);
@@ -541,7 +576,7 @@ namespace Holsters {
 			return;
 		}
 		for (int i = 1; i < 8; i++) {
-			if (playerINV) {
+			if (isHolsterSlotEnabled(i) && playerINV) {
 				playerINV->inventoryLock.LockForReadAndWrite();
 				InventorySnapshot INVSnapShot = GetINVSnapShot(i, playerINV, holsteredWeapNames[i]);
 				if (INVSnapShot.Taggedform && INVSnapShot.Taggedweapon) {
