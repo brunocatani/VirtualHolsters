@@ -3,6 +3,7 @@
 
 #include "Holsters.h"
 #include "HolsterInteraction.h"
+#include "HolsterSlotPolicy.h"
 #include "utils.h"
 #include "Offsets.h"
 #include "weaponOffset.h"
@@ -142,6 +143,8 @@ namespace Holsters {
 	namespace
 	{
 		constexpr std::size_t kMaximumHolsterSlots = 7;
+		SlotPolicy::SlotMask s_enabledHolsterSlots =
+			SlotPolicy::kAllSlotsMask;
 
 		struct HandInteractionRuntime
 		{
@@ -329,6 +332,7 @@ namespace Holsters {
 		HolsterActionState GetHolsterActionState(const UInt32 slot)
 		{
 			if (slot < 1 || slot > kMaximumHolsterSlots ||
+				!isHolsterSlotEnabled(slot) ||
 				!HolsterContainers[slot] ||
 				!(*g_player) ||
 				!(*g_gameVM) ||
@@ -392,6 +396,14 @@ namespace Holsters {
 		s_rightHand.gesture.Reset();
 		ClearHandContacts();
 		SetActivationSuppressed(false);
+	}
+
+	bool isHolsterSlotEnabled(const UInt32 slot) noexcept {
+		return SlotPolicy::IsEnabled(s_enabledHolsterSlots, slot);
+	}
+
+	UInt32 getNextEnabledHolster(const UInt32 current) noexcept {
+		return SlotPolicy::NextEnabled(s_enabledHolsterSlots, current);
 	}
 
 	bool isHandInHolsterZone(const bool isLeft) {
@@ -1053,6 +1065,21 @@ namespace Holsters {
 		gShowWeapons = ini.GetBoolValue("Main Options", "DisplayWeapons", true);
 		gIsRightHanded = ini.GetBoolValue("Main Options", "isRightHanded", true);
 		testclonefix = ini.GetBoolValue("Main Options", "bTestCloneFix", false);
+		s_enabledHolsterSlots = SlotPolicy::kNoSlotsMask;
+		for (UInt32 slot = SlotPolicy::kFirstSlot;
+			 slot <= SlotPolicy::kLastSlot;
+			 ++slot) {
+			s_enabledHolsterSlots = SlotPolicy::SetEnabled(
+				s_enabledHolsterSlots,
+				slot,
+				ini.GetBoolValue(
+					"Holster Slots",
+					SlotPolicy::kConfigKeys[slot],
+					true));
+		}
+		_MESSAGE(
+			"Holster slot enable mask: 0x%02X",
+			static_cast<unsigned int>(s_enabledHolsterSlots));
 		camDistance = (int)ini.GetLongValue("Config Mode", "CameraMoveBackDist", 120);
 		camDistancePA = (int)ini.GetLongValue("Config Mode", "CameraMoveBackDistPA", 240);
 		RXOffset = (float)ini.GetDoubleValue("Config Mode", "RotateXMultiplier", 0.0);
@@ -1312,7 +1339,8 @@ namespace Holsters {
 			x = x - 1;
 		}
 		for (int i = 1; i < 8; i++) {
-			if (i != gCurHolster) {
+			if (static_cast<UInt32>(i) != gCurHolster &&
+				isHolsterSlotEnabled(i)) {
 				gInPowerArmor ? PAholsterArtWorkPresets[i] = x : holsterArtWorkPresets[i] = x;
 				std::string p = std::to_string(i) + " " + std::to_string(x);
 				//_MESSAGE(p.c_str());
@@ -1978,7 +2006,10 @@ namespace Holsters {
 		std::size_t leftSampleCount = 0;
 		std::size_t rightSampleCount = 0;
 		for (const auto& [slot, holster] : HolsterRegisteredObjects) {
-			if (!holster || !holster->bone || holster->radius <= 0.0F) {
+			if (!isHolsterSlotEnabled(slot) ||
+				!holster ||
+				!holster->bone ||
+				holster->radius <= 0.0F) {
 				continue;
 			}
 
@@ -2067,6 +2098,9 @@ namespace Holsters {
 	}
 
 	void displayHolstersSphere(UInt32 handle) {
+		if (!isHolsterSlotEnabled(handle)) {
+			return;
+		}
 		if (HolsterRegisteredObjects[handle]) {
 			NiNode* bone = HolsterRegisteredObjects[handle]->bone;
 			NiNode* hol;
@@ -2115,7 +2149,7 @@ namespace Holsters {
 	}
 
 	void registerHolsterSphere(float radius, BSFixedString bone, NiPoint3 pos, BSFixedString MeshPath, BSFixedString MeshName, UInt32 handle) {
-		if (radius == 0.0) {
+		if (!isHolsterSlotEnabled(handle) || radius == 0.0) {
 			return;
 		}
 		if (!(*g_player)->unkF0) {
@@ -2136,6 +2170,9 @@ namespace Holsters {
 
 	void createAllHolsterSpheres() {
 		for (int i = 1; i < 8; i++) {
+			if (!isHolsterSlotEnabled(i)) {
+				continue;
+			}
 			std::string c1 = HolsterBones[i];
 			std::string hN = "Holster" + std::to_string(i);
 			NiTransform _customTransform;
@@ -2181,6 +2218,9 @@ namespace Holsters {
 	void updateSpheresForPAEvent() {
 		detectInPowerArmor() ? _MESSAGE("HOLSTER SPHERE EVENT: STARTING SPHERES CREATION FOR PA") : _MESSAGE("HOLSTER SPHERE EVENT: STARTING SPHERES CREATION FOR NON-POWER ARMOR MODE");
 		for (int i = 1; i < 8; i++) {
+			if (!isHolsterSlotEnabled(i)) {
+				continue;
+			}
 			std::string c1 = HolsterBones[i];
 			std::string hN = "Holster" + std::to_string(i);
 			NiTransform _customTransform;
@@ -2208,45 +2248,44 @@ namespace Holsters {
 	void destroyAllHolsterSpheres() {
 		//_MESSAGE("POWER ARMOR ENTER / EXIT EVENT:: REMOVING REDUNDANT HOLSTER SPHERES");
 		resetInteractionState();
-		NiNode* hol = FindNode("Holster1");
-		if (!hol) {
-			return;
+		for (auto& entry : HolsterRegisteredObjects) {
+			MyHolster* registeredHolster = entry.second;
+			if (registeredHolster && registeredHolster->debugSphere) {
+				NiNode* sphere = registeredHolster->debugSphere;
+				sphere->flags |= 0x1;
+				sphere->m_localTransform.scale = 0;
+				if (sphere->m_parent) {
+					VRSceneGraph::RemoveChild(sphere->m_parent, sphere);
+				}
+				registeredHolster->debugSphere = nullptr;
+			}
+			delete registeredHolster;
 		}
-		else {
-			hol->flags |= 0x1;
-			hol->m_localTransform.scale = 0;
-			VRSceneGraph::RemoveChild(hol->m_parent, hol);
-		}
-		hol = FindNode("Holster2");
-		if (!hol) {
-			return;
-		}
-		else {
-			hol->flags |= 0x1;
-			hol->m_localTransform.scale = 0;
-			VRSceneGraph::RemoveChild(hol->m_parent, hol);
-		}
-		for (int i = 1; i < 8; i++) {
-			delete HolsterRegisteredObjects[i];
-			HolsterRegisteredObjects.erase(i);
-		}
+		HolsterRegisteredObjects.clear();
 		//_MESSAGE("POWER ARMOR ENTER / EXIT EVENT:: ALL HOLSTER SPHERES REMOVED");
 	}
 
 	void sphereMoveSneak() {
 		for (int i = 1; i < 8; i++) {
-			if (HolsterRegisteredObjects[i]) {
-				BSFixedString NameofMesh = HolsterRegisteredObjects[i]->MeshName;
+			if (!isHolsterSlotEnabled(i)) {
+				continue;
+			}
+			const auto it = HolsterRegisteredObjects.find(i);
+			if (it != HolsterRegisteredObjects.end() && it->second) {
+				BSFixedString NameofMesh = it->second->MeshName;
 				NiTransform _customTransform;
-				NiNode* hol = HolsterRegisteredObjects[i]->debugSphere;
+				NiNode* hol = it->second->debugSphere;
+				if (!hol) {
+					continue;
+				}
 				auto lookup = gInPowerArmor ? g_weaponOffsets->getOffset(NameofMesh.c_str(), sneakinpowerArmor) : g_weaponOffsets->getOffset(NameofMesh.c_str(), noPASneak);
 				if (lookup.has_value()) {
 					_customTransform = lookup.value();
 					hol->m_localTransform.pos = _customTransform.pos;
 					float f = 12.0;
 					_isConfigModeActive ? hol->m_localTransform.scale = (_customTransform.scale * 2) : hol->m_localTransform.scale = f;
-					HolsterRegisteredObjects[i]->offset = _customTransform.pos;
-					HolsterRegisteredObjects[i]->radius = _customTransform.scale;
+					it->second->offset = _customTransform.pos;
+					it->second->radius = _customTransform.scale;
 				}
 			}
 		}
@@ -2254,18 +2293,25 @@ namespace Holsters {
 
 	void sphereMoveStand() {
 		for (int i = 1; i < 8; i++) {
-			if (HolsterRegisteredObjects[i]) {
+			if (!isHolsterSlotEnabled(i)) {
+				continue;
+			}
+			const auto it = HolsterRegisteredObjects.find(i);
+			if (it != HolsterRegisteredObjects.end() && it->second) {
 				NiTransform _customTransform;
-				BSFixedString NameofMesh = HolsterRegisteredObjects[i]->MeshName;
-				NiNode* hol = HolsterRegisteredObjects[i]->debugSphere;
+				BSFixedString NameofMesh = it->second->MeshName;
+				NiNode* hol = it->second->debugSphere;
+				if (!hol) {
+					continue;
+				}
 				auto lookup = gInPowerArmor ? g_weaponOffsets->getOffset(NameofMesh.c_str(), powerArmor) : g_weaponOffsets->getOffset(NameofMesh.c_str(), noPA);
 				if (lookup.has_value()) {
 					_customTransform = lookup.value();
 					hol->m_localTransform.pos = _customTransform.pos;
 					float f = 12.0;
 					_isConfigModeActive ? hol->m_localTransform.scale = (_customTransform.scale * 2) : hol->m_localTransform.scale = f;
-					HolsterRegisteredObjects[i]->offset = _customTransform.pos;
-					HolsterRegisteredObjects[i]->radius = _customTransform.scale;
+					it->second->offset = _customTransform.pos;
+					it->second->radius = _customTransform.scale;
 
 				}
 			}
@@ -2273,8 +2319,14 @@ namespace Holsters {
 	}
 
 	float getRadius(int handle) {
-		float radius = (HolsterRegisteredObjects[handle]->radius * 2);
-		return radius;
+		if (!isHolsterSlotEnabled(handle)) {
+			return 0.0F;
+		}
+		const auto it = HolsterRegisteredObjects.find(handle);
+		if (it == HolsterRegisteredObjects.end() || !it->second) {
+			return 0.0F;
+		}
+		return it->second->radius * 2.0F;
 	}
 
 	// Visible Weapon Functions
@@ -2937,7 +2989,8 @@ public:
 
 	bool VH_CALL IsHolsterFree(std::uint32_t holsterIndex) const override
 	{
-		if (holsterIndex < 1 || holsterIndex > 7) {
+		if (holsterIndex < 1 || holsterIndex > 7 ||
+			!Holsters::isHolsterSlotEnabled(holsterIndex)) {
 			return false;
 		}
 		return (holsteredWeapNames[holsterIndex] == "Empty");
@@ -2958,7 +3011,8 @@ public:
 		}
 		std::string name(weaponName);
 		for (int i = 1; i <= 7; i++) {
-			if (holsteredWeapNames[i] == name) {
+			if (Holsters::isHolsterSlotEnabled(i) &&
+				holsteredWeapNames[i] == name) {
 				return true;
 			}
 		}
@@ -2967,7 +3021,8 @@ public:
 
 	bool VH_CALL GetHolsterPosition(std::uint32_t holsterIndex, float& outX, float& outY, float& outZ) const override
 	{
-		if (holsterIndex < 1 || holsterIndex > 7) {
+		if (holsterIndex < 1 || holsterIndex > 7 ||
+			!Holsters::isHolsterSlotEnabled(holsterIndex)) {
 			return false;
 		}
 		auto it = Holsters::HolsterRegisteredObjects.find(holsterIndex);
@@ -2985,7 +3040,8 @@ public:
 
 	float VH_CALL GetHolsterRadius(std::uint32_t holsterIndex) const override
 	{
-		if (holsterIndex < 1 || holsterIndex > 7) {
+		if (holsterIndex < 1 || holsterIndex > 7 ||
+			!Holsters::isHolsterSlotEnabled(holsterIndex)) {
 			return 0.0f;
 		}
 		auto it = Holsters::HolsterRegisteredObjects.find(holsterIndex);
@@ -3028,6 +3084,10 @@ public:
 	{
 		if (holsterIndex < 1 || holsterIndex > 7) {
 			_MESSAGE("AddHolster: Invalid holster index %d", holsterIndex);
+			return false;
+		}
+		if (!Holsters::isHolsterSlotEnabled(holsterIndex)) {
+			_MESSAGE("AddHolster: Holster %d is disabled", holsterIndex);
 			return false;
 		}
 		if (!weaponName || weaponName[0] == '\0') {

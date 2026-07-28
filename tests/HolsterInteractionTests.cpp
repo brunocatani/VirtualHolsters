@@ -1,4 +1,5 @@
 #include "HolsterInteraction.h"
+#include "HolsterSlotPolicy.h"
 
 #include <array>
 #include <iostream>
@@ -288,6 +289,48 @@ namespace
 			SelectStableZone(kNoSlot, samples.data(), 2) == kNoSlot,
 			"equal normalized overlaps must fail closed");
 	}
+
+	void TestHolsterSlotPolicy()
+	{
+		using namespace Holsters::SlotPolicy;
+
+		Check(
+			!IsEnabled(kAllSlotsMask, kNoSlot) &&
+				!IsEnabled(kAllSlotsMask, kLastSlot + 1),
+			"invalid slot numbers must never be enabled");
+		for (Slot slot = kFirstSlot; slot <= kLastSlot; ++slot) {
+			Check(
+				IsEnabled(kAllSlotsMask, slot),
+				"the default mask must enable every physical holster");
+		}
+
+		auto mask = SetEnabled(kAllSlotsMask, 2, false);
+		mask = SetEnabled(mask, 4, false);
+		mask = SetEnabled(mask, 7, false);
+		Check(
+			!IsEnabled(mask, 2) &&
+				!IsEnabled(mask, 4) &&
+				!IsEnabled(mask, 7),
+			"disabled slots must be removed from the enable mask");
+		Check(
+			IsEnabled(mask, 1) &&
+				IsEnabled(mask, 3) &&
+				IsEnabled(mask, 5) &&
+				IsEnabled(mask, 6),
+			"disabling selected slots must preserve all other slots");
+		Check(
+			NextEnabled(mask, 1) == 3,
+			"cycling must skip a disabled interior slot");
+		Check(
+			NextEnabled(mask, 6) == 1,
+			"cycling must skip disabled slots while wrapping");
+		Check(
+			NextEnabled(mask, kNoSlot) == 1,
+			"cycling without a current slot must choose the first enabled slot");
+		Check(
+			NextEnabled(kNoSlotsMask, 3) == kNoSlot,
+			"cycling with every slot disabled must fail closed");
+	}
 }
 
 int main()
@@ -300,6 +343,7 @@ int main()
 	TestInterruptionAndTrackingLossRearm();
 	TestIndependentHandsAndSimultaneousPriority();
 	TestStableZoneSelection();
+	TestHolsterSlotPolicy();
 
 	if (s_failures != 0) {
 		std::cerr << s_failures << " interaction test(s) failed.\n";

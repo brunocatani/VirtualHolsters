@@ -382,11 +382,12 @@ namespace Holsters {
 			holster->flags |= 0x1;
 			holster->m_localTransform.scale = 0.0;
 		}
-		// iterate current holster number by 1
-		gCurHolster += 1;
-			if (gCurHolster > 7) {
-				gCurHolster = 1;
+		// Cycle only through holsters available to gameplay.
+		const UInt32 nextHolster = getNextEnabledHolster(gCurHolster);
+		if (nextHolster == 0) {
+			return;
 		}
+		gCurHolster = nextHolster;
 		// Remove old holster UI lable 
 		NiNode* boneNode = nullptr;
 		BSFixedString nodename;
