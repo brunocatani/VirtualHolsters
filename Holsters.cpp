@@ -10,6 +10,7 @@
 #include "VRHook.h"
 #include "VRSceneGraph.h"
 #include "VirtualHolstersAPI.h"
+#include "RIWCompatibility.h"
 #include "f4se/GameMenus.h"
 #include "ConfigModeMenu.h"
 #include "MenuChecker.h"
@@ -394,6 +395,7 @@ namespace Holsters {
 	void resetInteractionState() {
 		s_leftHand.gesture.Reset();
 		s_rightHand.gesture.Reset();
+		RIWCompatibility::ResetPendingRequest();
 		ClearHandContacts();
 		SetActivationSuppressed(false);
 	}
@@ -457,6 +459,9 @@ namespace Holsters {
 				}
 				initBoneTreeFlag = false;
 				PlayerLoaded();
+			}
+			if (!_isConfigModeActive && !isGameStopped()) {
+				RIWCompatibility::ServicePendingRequest();
 			}
 			detectHolsterSphere();
 			VRButtonsMain();
@@ -721,7 +726,7 @@ namespace Holsters {
 					gameplayEnabled &&
 					IsSelectedActionEligible(action)) {
 					gCurHolster = action.slot;
-					WeapSort(action.slot);
+					WeapSort(action.slot, action.isLeft);
 					if (c_ActivationDisabled) {
 						MenuCheck = true;
 						std::thread t2(CheckMenusTimer);

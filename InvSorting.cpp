@@ -1,5 +1,6 @@
 #include "InvSorting.h"
 #include "Holsters.h"
+#include "RIWCompatibility.h"
 
 namespace Holsters {
 	RelocAddr<std::uint64_t*> g_ActorEquipManager(0x5a38bf8);
@@ -92,7 +93,7 @@ namespace Holsters {
 		return;
 	}
 
-	void WeapSort(int handle) {
+	void WeapSort(int handle, const bool requestingHandIsLeft) {
 		if (handle < 1 || handle > 7 ||
 			!isHolsterSlotEnabled(handle) ||
 			!HolsterContainers[handle]) {
@@ -215,6 +216,9 @@ namespace Holsters {
 					//}
 					//else {
 					Offsets::EquipObject(*g_ActorEquipManager, *g_player, instance, INVSnapShot.TaggedWeapStackID, 1, equipSlot, true, false, true, true, false);
+					RIWCompatibility::QueueEquippedWeaponHand(
+						requestingHandIsLeft,
+						INVSnapShot.Taggedform->formID);
 					//}
 					nDestoryWeapon(handle, false, true);
 					if (holsterINV) {

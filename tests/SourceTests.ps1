@@ -33,6 +33,7 @@ $hook = Get-Content -LiteralPath (Join-Path $Root "hook.cpp") -Raw
 $holsters = Get-Content -LiteralPath (Join-Path $Root "Holsters.cpp") -Raw
 $configMode = Get-Content -LiteralPath (Join-Path $Root "ConfigModeMenu.cpp") -Raw
 $inventory = Get-Content -LiteralPath (Join-Path $Root "InvSorting.cpp") -Raw
+$riwCompatibility = Get-Content -LiteralPath (Join-Path $Root "RIWCompatibility.cpp") -Raw
 $legacyBridge = Get-Content -LiteralPath (Join-Path $Root "LegacyBridge.cpp") -Raw
 $interaction = Get-Content -LiteralPath (Join-Path $Root "HolsterInteraction.h") -Raw
 $slotPolicy = Get-Content -LiteralPath (Join-Path $Root "HolsterSlotPolicy.h") -Raw
@@ -99,6 +100,7 @@ Assert-Contains $vrHeader 'isControllerStateAvailable' "Per-hand input validity 
 Assert-Contains $holsters 's_leftHand\.gesture\.Update' "Gameplay must update an independent left-hand gesture."
 Assert-Contains $holsters 's_rightHand\.gesture\.Update' "Gameplay must update an independent right-hand gesture."
 Assert-Contains $holsters 'Interaction::SelectAction' "Per-hand holster action arbitration must remain explicit."
+Assert-Contains $holsters 'WeapSort\(action\.slot,\s*action\.isLeft\)' "The selected physical hand must survive arbitration into inventory equip."
 Assert-Contains $holsters 'IsPullOutActionEligible' "Pull-out must recheck occupied-slot equip eligibility."
 Assert-Contains $holsters 'leftCanArmPullOut' "Left-hand pull-out must arm only on an eligible press."
 Assert-Contains $holsters 'rightCanArmPullOut' "Right-hand pull-out must arm only on an eligible press."
@@ -114,7 +116,16 @@ Assert-Contains $holsters '"Holster Slots"' "Holster availability must be loaded
 Assert-Contains $holsters 'SlotPolicy::kConfigKeys\[slot\]' "Every physical slot must have an independent enable key."
 Assert-Contains $holsters '(?s)detectHolsterSphere\(\).+?!isHolsterSlotEnabled\(slot\)' "Disabled slots must be excluded from hand-zone detection."
 Assert-Contains $inventory '(?s)GameLoadInvSort\(\).+?Disabled holster association cleared' "Disabled slots must release their saved weapon association on load."
-Assert-Contains $inventory '(?s)WeapSort\(int handle\).+?!isHolsterSlotEnabled\(handle\)' "Disabled slots must reject equip and holster actions."
+Assert-Contains $inventory '(?s)WeapSort\(int handle,\s*const bool requestingHandIsLeft\).+?!isHolsterSlotEnabled\(handle\)' "Disabled slots must reject equip and holster actions."
+Assert-Contains $inventory '(?s)EquipObject\(.+?QueueEquippedWeaponHand\(\s*requestingHandIsLeft,\s*INVSnapShot\.Taggedform->formID\)' "A successful inventory equip must queue its initiating hand and exact weapon form."
+Assert-Contains $holsters 'RIWCompatibility::ServicePendingRequest\(\)' "The optional exact-hand request must be serviced after the equipped weapon becomes observable."
+Assert-Contains $holsters 'RIWCompatibility::ResetPendingRequest\(\)' "Lifecycle interruption must cancel stale exact-hand assignments."
+Assert-Contains $riwCompatibility 'GetModuleHandleA\("RIW\.dll"\)' "Virtual Holsters must discover RIW without creating a hard runtime dependency."
+Assert-NotContains $riwCompatibility 'LoadLibrary' "Virtual Holsters must never force RIW to load."
+Assert-Contains $riwCompatibility 'kExactHandTableBytes[\s\S]*providerApiByteSize\s*<[\s\r\n]+\s*Abi::kExactHandTableBytes' "Virtual Holsters must reject a truncated RIW V1 table before reading the appended exact-hand function."
+Assert-Contains $riwCompatibility 'state\.weaponFormId\s*!=\s*s_pending\.weaponFormId[\s\S]*state\.weaponGenerationKey\s*==\s*0' "The compatibility bridge must wait for the exact equipped form and a generation-bound identity."
+Assert-Contains $riwCompatibility 'request\.weaponGenerationKey\s*=\s*state\.weaponGenerationKey' "The accepted RIW request must be guarded by the observed ROCK weapon generation."
+Assert-Contains $riwCompatibility 'EquippedWeaponHandRequests|kExactHandCapability' "The RIW compatibility client must request only exact-hand authority from RIW."
 Assert-Contains $configMode 'getNextEnabledHolster\(gCurHolster\)' "Config-mode cycling must skip disabled holsters."
 
 Assert-Contains $cmake 'CommonLibF4::CommonLibF4' "The plugin must link CommonLibF4VR."
@@ -125,6 +136,7 @@ Assert-Contains $cmake 'POST_BUILD_COPY_PLUGIN' "The auto-deploying build path m
 Assert-NotContains $cmake 'TARGET_PDB_FILE' "Auto-deploy must copy only VirtualHolsters.dll."
 Assert-NotContains $cmake 'INTERPROCEDURAL_OPTIMIZATION_RELEASE\s+TRUE' "LTO must remain disabled."
 Assert-Contains $cmake '"VRSceneGraph\.cpp"' "The FO4VR scene-graph ABI adapter must be compiled into the plugin."
+Assert-Contains $cmake '"RIWCompatibility\.cpp"' "The optional RIW exact-hand compatibility boundary must be compiled into the plugin."
 $legacySourceSet = [regex]::Match(
     $cmake,
     '(?s)set\(\s*LEGACY_GAMEPLAY_SOURCES(?<Body>.*?)\)\s*set_source_files_properties')

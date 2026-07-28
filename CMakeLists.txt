@@ -141,6 +141,7 @@ add_library(
   "MenuChecker.cpp"
   "MiscStructs.cpp"
   "Offsets.cpp"
+  "RIWCompatibility.cpp"
   "Utils.cpp"
   "VRHook.cpp"
   "VRSceneGraph.cpp"

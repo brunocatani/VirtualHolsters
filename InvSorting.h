@@ -8,7 +8,7 @@
 namespace Holsters {
 	struct InventorySnapshot;
 	void WeapCheck(int i);
-	void WeapSort(int handle);
+	void WeapSort(int handle, bool requestingHandIsLeft);
 	void resetHolsterName(int handle);
 	void addHolster(int handle, std::string weapName, TESForm* baseForm, TESObjectREFR* object, bool isMeleeW);
 	InventorySnapshot GetINVSnapShot(int handle, BGSInventoryList* inventory, std::string holstername);
