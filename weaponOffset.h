@@ -35,11 +35,9 @@ namespace Holsters {
 	static const std::string noPASneakSuffix{ "-Sneak" };
 	static const std::string PASneakSuffix{ "-PASneak" };
 	static const std::string NoPASuffix{ "-Normal" };
-	static const std::string defaultJson{ ".\\Data\\F4SE\\plugins\\VRH_weapon_offsets.json" };
-	static std::string offsetsPath{ ".\\Data\\F4SE\\plugins\\VRH_weapon_offsets" } ;
 	void readOffsetJson();
-	void loadOffsetJsonFile(const std::string& file = defaultJson);
+	void loadOffsetJsonFile(const std::string& file = {});
 	void writeOffsetJson();
-	void saveOffsetJsonFile(const nlohmann::json& weaponJson, const std::string& file = defaultJson);
+	void saveOffsetJsonFile(const nlohmann::json& weaponJson, const std::string& file = {});
 	extern WeaponOffset* g_weaponOffsets;
 }
