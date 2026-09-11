@@ -2,6 +2,7 @@
 // Thanks to RollingRock for orginal code from which this was adapted
 
 #include "Holsters.h"
+#include "ConfigPaths.h"
 #include "HolsterInteraction.h"
 #include "HolsterSlotPolicy.h"
 #include "utils.h"
@@ -18,9 +19,56 @@
 #include <array>
 #include <iostream>
 #include <fstream>
+#include <memory>
 #include "f4se/NiNodes.h"
 #include "f4se/GameReferences.h"
 #include "f4se/BSCollision.h"
+
+namespace {
+    // On a missing file, record the same defaults the loader reads below.
+    class FirstRunIni : public CSimpleIniA {
+    public:
+        explicit FirstRunIni(bool create) : create_(create) {}
+        long GetLongValue(const char* section, const char* key, long fallback) {
+            if (create_) SetLongValue(section, key, fallback);
+            return CSimpleIniA::GetLongValue(section, key, fallback);
+        }
+        double GetDoubleValue(const char* section, const char* key, double fallback) {
+            if (create_) SetDoubleValue(section, key, fallback);
+            return CSimpleIniA::GetDoubleValue(section, key, fallback);
+        }
+        bool GetBoolValue(const char* section, const char* key, bool fallback) {
+            if (create_) SetBoolValue(section, key, fallback);
+            return CSimpleIniA::GetBoolValue(section, key, fallback);
+        }
+    private:
+        bool create_;
+    };
+
+    bool saveNewDefaults(const CSimpleIniA& ini, const std::filesystem::path& path) {
+        try {
+            std::filesystem::create_directories(path.parent_path());
+            std::string text;
+            if (ini.Save(text, false) < 0) return false;
+            const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                const auto error = GetLastError();
+                return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS;
+            }
+            std::unique_ptr<void, decltype(&CloseHandle)> output(file, &CloseHandle);
+            DWORD written = 0;
+            if (WriteFile(output.get(), text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
+                written == text.size() && FlushFileBuffers(output.get())) return true;
+            output.reset();
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        } catch (const std::exception& error) {
+            _WARNING("Cannot create VirtualHolsters defaults: %s", error.what());
+        }
+        return false;
+    }
+}
 
 bool gPlayerisSneaking = false;
 bool gInPowerArmor = false;
@@ -1038,8 +1086,16 @@ namespace Holsters {
 	}
 
 	bool loadConfigFiles() {
-		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+        const auto iniPath = config::path("VirtualHolsters.ini");
+        if (iniPath.empty()) {
+            _WARNING("Documents could not be resolved; VirtualHolsters configuration is unavailable");
+            return false;
+        }
+        std::error_code pathError;
+        const bool missing = !std::filesystem::exists(iniPath, pathError);
+        if (pathError) return false;
+        FirstRunIni ini(missing);
+        SI_Error rc = missing ? SI_OK : ini.LoadFile(iniPath.c_str());
 
 		if (rc < 0) {
 			_MESSAGE("ERROR: cannot read VirtualHolsters.ini");
@@ -1108,11 +1164,15 @@ namespace Holsters {
 		PAholsterArtWorkPresets[5] = (int)ini.GetLongValue("Config Mode", "PAHolster05CustomArtSlot", 0);
 		PAholsterArtWorkPresets[6] = (int)ini.GetLongValue("Config Mode", "PAHolster06CustomArtSlot", 0);
 		PAholsterArtWorkPresets[7] = (int)ini.GetLongValue("Config Mode", "PAHolster07CustomArtSlot", 0);
+        if (missing && !saveNewDefaults(ini, iniPath)) {
+            _WARNING("Cannot create VirtualHolsters configuration");
+            return false;
+        }
 		readOffsetJson();
 		std::string fileName[8] = { "","LeftShoulder.ini", "RightShoulder.ini", "LeftHip.ini", "RightHip.ini", "LowerBack.ini", "LeftChest.ini", "RightChest.ini", };
 		std::string fileName2[8] = { "","LeftShoulderPA.ini", "RightShoulderPA.ini", "LeftHiPA.ini", "RightHipPA.ini", "LowerBackPA.ini", "LeftChestPA.ini", "RightChestPA.ini", };
 		for (int i = 1; i < 8; i++) {
-			const std::string path = { ".\\Data\\F4SE\\plugins\\VRH_WeaponBlackList\\" + fileName[i] };
+			const std::string path = { config::path("VRH_WeaponBlackList") + "\\" + fileName[i] };
 			std::string str;
 			std::fstream file;
 			file.open(path, std::ios::in);
@@ -1122,7 +1182,7 @@ namespace Holsters {
 			}
 		}
 		for (int i = 1; i < 8; i++) {
-			const std::string path = { ".\\Data\\F4SE\\plugins\\VRH_WeaponBlackList\\" + fileName2[i] };
+			const std::string path = { config::path("VRH_WeaponBlackList") + "\\" + fileName2[i] };
 			//_MESSAGE(path.c_str());
 			std::string str;
 			std::fstream file;
@@ -1133,7 +1193,7 @@ namespace Holsters {
 			}
 
 		}
-		const std::string path = { ".\\Data\\F4SE\\plugins\\VRH_MagazineBlackList\\MagazineBlackList.ini" };
+		const std::string path = { config::path("VRH_MagazineBlackList/MagazineBlackList.ini") };
 		//_MESSAGE(path.c_str());
 		std::string str;
 		std::fstream file;
@@ -1142,7 +1202,7 @@ namespace Holsters {
 		{
 			c_ExcludedMagazines.push_back(str);
 		}
-		const std::string path2 = { ".\\Data\\F4SE\\plugins\\VRH_weapon_offsets\\SwordDrawSFXList.ini" };
+		const std::string path2 = { config::path("VRH_weapon_offsets/SwordDrawSFXList.ini") };
 		//_MESSAGE(path.c_str());
 		std::string str2;
 		std::fstream file2;
@@ -1158,9 +1218,9 @@ namespace Holsters {
 
 	void ActivationToggle() {
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "bDisableActivation", c_ActivationDisabled);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void ChangeVATS() {
@@ -1190,16 +1250,16 @@ namespace Holsters {
 			c_VATSDisabled = true;
 		}
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "bDisableVATS", c_VATSDisabled);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void swapHolsterButton() {
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetLongValue("Button Config", "HolsterButtonID", c_holsterButtonID);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void configmodeupdate(int mode) {
@@ -1247,9 +1307,9 @@ namespace Holsters {
 	void toggleHaptics() {
 		ghapticsEnabled ? ghapticsEnabled = false : ghapticsEnabled = true;
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "EnableHaptics", ghapticsEnabled);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void toggleWeapVis() {
@@ -1277,17 +1337,17 @@ namespace Holsters {
 
 		}
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "DisplayWeapons", gShowWeapons);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void toggleSphereVis() {
 		gshowSpheres ? gshowSpheres = false : gshowSpheres = true;
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "DisplaySpheres", gshowSpheres);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void toggleSwitchRGA() {
@@ -1301,9 +1361,9 @@ namespace Holsters {
 			_MESSAGE("IRREGULAR BUTTON CONFIG NO CHANGES MADE");
 		}
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetLongValue("Button Config", "ConfigRotateButtonID", c_configModeRotateButton);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void toggleSwitchLGA() {
@@ -1318,17 +1378,17 @@ namespace Holsters {
 			_MESSAGE("IRREGULAR BUTTON CONFIG NO CHANGES MADE");
 		}
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetLongValue("Button Config", "ConfigModeShiftButtonID", c_configModeShiftButton);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void toggleSouthPaw() {
 		gIsRightHanded ? gIsRightHanded = false : gIsRightHanded = true;
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		rc = ini.SetBoolValue("Main Options", "isRightHanded", gIsRightHanded);
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void PressChangeAllArtWork() {
@@ -1354,12 +1414,12 @@ namespace Holsters {
 				if (artSwitched == false) {
 					gInPowerArmor ? PAholsterArtWorkPresets[i] = x + 1 : holsterArtWorkPresets[i] = x + 1;
 					CSimpleIniA ini;
-					SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+					SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 					std::string slot;
 					gInPowerArmor ? slot = "PAHolster0" + std::to_string(i) + "CustomArtSlot" : slot = "Holster0" + std::to_string(i) + "CustomArtSlot";
 					//_MESSAGE(slot.c_str());
 					gInPowerArmor ? rc = ini.SetLongValue("Config Mode", slot.c_str(), PAholsterArtWorkPresets[i]) : rc = ini.SetLongValue("Config Mode", slot.c_str(), holsterArtWorkPresets[i]);
-					rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+					rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 				}
 			}
 		}
@@ -1426,12 +1486,12 @@ namespace Holsters {
 				artToChange);
 			//_MESSAGE("UI: HOLSTER ART SUCCESSFULLY CHANGED");
 			CSimpleIniA ini;
-			SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+			SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 			std::string slot;
 			gInPowerArmor ? slot = "PAHolster0" + std::to_string(holster) + "CustomArtSlot" : slot = "Holster0" + std::to_string(holster) + "CustomArtSlot";
 			//_MESSAGE(slot.c_str());
 			gInPowerArmor ? rc = ini.SetLongValue("Config Mode", slot.c_str(), PAholsterArtWorkPresets[holster]) : rc = ini.SetLongValue("Config Mode", slot.c_str(), holsterArtWorkPresets[holster]);
-			rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+			rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 			artSwitched = true;
 		}
 	}
@@ -1958,13 +2018,13 @@ namespace Holsters {
 			HolsterRegisteredObjects[gCurHolster]->radius = _customTransform1.scale;
 		}
 		CSimpleIniA ini;
-		SI_Error rc = ini.LoadFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		SI_Error rc = ini.LoadFile(config::path("VirtualHolsters.ini").c_str());
 		for (int i = 1; i < 8; i++) {
 			std::string val;
 			gInPowerArmor ? val = ("PAHolster0" + std::to_string(i) + "CustomArtSlot") : val = ("Holster0" + std::to_string(i) + "CustomArtSlot");
 			gInPowerArmor ? rc = ini.SetLongValue("Config Mode", val.c_str(), PAholsterArtWorkPresets[i]) : rc = ini.SetLongValue("Config Mode", val.c_str(), holsterArtWorkPresets[i]);
 		}
-		rc = ini.SaveFile(".\\Data\\F4SE\\plugins\\VirtualHolsters.ini");
+		rc = ini.SaveFile(config::path("VirtualHolsters.ini").c_str());
 	}
 
 	void restoreAllWeapons() {
