@@ -43,7 +43,6 @@
       "configurePreset": "fast",
       "configuration": "Release",
       "execution": {
-        "jobs": 4,
         "noTestsAction": "error"
       }
     }
