@@ -12,13 +12,13 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "$penv{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
         "CMAKE_CXX_FLAGS": "/EHsc /MP /external:anglebrackets /external:W0 $penv{CXXFLAGS}"
       },
       "environment": {
-        "VCPKG_ROOT": "C:/vcpkg"
+        "VCPKG_ROOT": "$penv{VCPKG_ROOT}"
       }
     },
     {
@@ -34,8 +34,7 @@
     {
       "name": "fast",
       "configurePreset": "fast",
-      "configuration": "Release",
-      "jobs": 1
+      "configuration": "Release"
     }
   ],
   "testPresets": [
@@ -44,7 +43,6 @@
       "configurePreset": "fast",
       "configuration": "Release",
       "execution": {
-        "jobs": 4,
         "noTestsAction": "error"
       }
     }
