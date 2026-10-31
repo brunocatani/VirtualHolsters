@@ -85,7 +85,8 @@ namespace Holsters {
 			catch (std::exception& e) {
 				_WARNING("Unable to convert path to string: %s", e.what());
 			}
-			if (file.exists() && !file.is_directory())
+			// The folder also holds the draw sound list (.ini).
+			if (file.exists() && !file.is_directory() && file.path().extension() == ".json")
 				loadOffsetJsonFile(file.path().string());
 		}
 	}

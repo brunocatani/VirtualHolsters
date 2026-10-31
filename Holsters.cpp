@@ -1884,6 +1884,14 @@ namespace Holsters {
             _WARNING("Cannot create VirtualHolsters configuration");
             return false;
         }
+		for (const char* folder : { "VRH_weapon_offsets", "VRH_WeaponBlackList", "VRH_MagazineBlackList" }) {
+			const int copied = config::seedMissingDefaults(folder);
+			if (copied < 0) {
+				_WARNING("Cannot prepare %s in the VirtualHolsters configuration folder", folder);
+			} else if (copied > 0) {
+				_MESSAGE("Copied %d shipped default file(s) into %s", copied, folder);
+			}
+		}
 		readOffsetJson();
 		std::string fileName[8] = { "","LeftShoulder.ini", "RightShoulder.ini", "LeftHip.ini", "RightHip.ini", "LowerBack.ini", "LeftChest.ini", "RightChest.ini", };
 		std::string fileName2[8] = { "","LeftShoulderPA.ini", "RightShoulderPA.ini", "LeftHiPA.ini", "RightHipPA.ini", "LowerBackPA.ini", "LeftChestPA.ini", "RightChestPA.ini", };
