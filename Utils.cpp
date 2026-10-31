@@ -75,22 +75,6 @@ namespace Holsters {
 		return (stat(name.c_str(), &buffer) == 0);
 	}
 
-	void CheckMenusTimer() {
-		Sleep(1000);
-		MenuCheck = false;
-	}
-
-	void FistsTimer(int time) {
-		Sleep(time);
-		fistsPressed = false;
-	}
-
-	void infoTimer(int time) {
-		Sleep(time);
-		infoPressed = false;
-		doublepress = 0;
-	}
-
 	void checkingloadingcompleted() {
 		//Sleep(500);
 		PlayerLoaded();

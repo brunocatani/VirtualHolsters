@@ -67,6 +67,13 @@ namespace Holsters {
 		BSFixedString WeaponName;
 		TESObjectREFR* ThisWeapon;
 		UInt32 ThisForm;
+		// A weapon put away from a hand starts where the hand held it and
+		// eases into its holster pose (bone-local transforms).
+		bool blending = false;
+		float blendElapsed = 0.0F;
+		float blendDuration = 0.0F;
+		NiTransform blendFrom{};
+		NiTransform blendTo{};
 	};
 
 	class MyHolster {
@@ -171,6 +178,7 @@ namespace Holsters {
 	void detectHolsterSphere();
 	bool isHandInHolsterZone(bool isLeft);
 	UInt32 getHandHolster(bool isLeft);
+	NiPoint3 HolsterCenterWorld(const MyHolster& holster);
 	void displayHolstersSphere(UInt32);
 	void createAllHolsterSpheres();
 	void updateSpheresForPAEvent();
@@ -179,13 +187,15 @@ namespace Holsters {
 	void sphereMoveSneak();
 	void sphereMoveStand();
 	float getRadius(int);
-	void hideMagazine(NiNode* child, int handle);
+	void hideMagazine(NiNode* child, bool isMelee);
 	void clonemeshfix(NiNode* original, NiNode* clone);
-	void displayWeapon(TESObjectREFR* object, UInt32 handle);
+	// Clones `source` into the slot. startWorld, when given, is where the
+	// weapon is on screen now; the clone eases from there into its pose.
+	void displayWeapon(NiNode* source, UInt32 handle, const NiTransform* startWorld);
 	void nDestoryWeapon(UInt32 handle, bool destroyArt, bool playsound);
 	void playSwordSFX(int handle);
 	void moveWeapon(int);
-	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, TESObjectREFR* object, UInt32 handle, bool isMeleeW);
+	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, NiNode* source, UInt32 handle, bool isMeleeW, const NiTransform* startWorld);
 	void RegisterForHolsterEvents(StaticFunctionTag* base, VMObject* thisObject);
 	void UnRegisterForHolsterEvents(StaticFunctionTag* base, VMObject* thisObject);
 	bool RegisterFuncs(VirtualMachine* vm);

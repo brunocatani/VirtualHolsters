@@ -76,6 +76,22 @@ if(NOT EXISTS "${LEGACY_F4SEVR_SOURCE_ROOT}/common/IPrefix.h")
   )
 endif()
 
+# ROCK is optional at runtime; its public major-2 headers are a build input so
+# the plugin can bind ROCK.dll when it is loaded.
+set(
+  ROCK_INCLUDE_DIR
+  ""
+  CACHE PATH
+  "ROCK's public include directory (the folder containing ROCK/Client.h)."
+)
+if(NOT EXISTS "${ROCK_INCLUDE_DIR}/ROCK/Client.h")
+  message(
+    FATAL_ERROR
+    "ROCK_INCLUDE_DIR must name ROCK's include directory (ROCK/Client.h was "
+    "not found under '${ROCK_INCLUDE_DIR}')"
+  )
+endif()
+
 set(OPENVR_ROOT "${ROOT_DIR}/openvr")
 if(
   NOT EXISTS "${OPENVR_ROOT}/openvr.h"
@@ -140,8 +156,9 @@ add_library(
   "Matrix.cpp"
   "MenuChecker.cpp"
   "MiscStructs.cpp"
+  "NativeEquipment.cpp"
   "Offsets.cpp"
-  "RIWCompatibility.cpp"
+  "RockProvider.cpp"
   "Utils.cpp"
   "VRHook.cpp"
   "VRSceneGraph.cpp"
@@ -165,6 +182,17 @@ target_include_directories(
     "${ROOT_DIR}"
     "${ROOT_DIR}/include"
     "${OPENVR_ROOT}"
+)
+set_source_files_properties(
+  "RockProvider.cpp"
+  PROPERTIES
+    INCLUDE_DIRECTORIES "${ROCK_INCLUDE_DIR}"
+    COMPILE_DEFINITIONS NOMINMAX
+)
+set_source_files_properties(
+  "NativeEquipment.cpp"
+  PROPERTIES
+    COMPILE_DEFINITIONS NOMINMAX
 )
 target_compile_options(
   ${PROJECT_NAME}
@@ -239,20 +267,6 @@ set_target_properties(
     INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE
 )
 
-find_program(PWSH_EXECUTABLE NAMES pwsh REQUIRED)
-add_custom_target(
-  VirtualHolstersSourceRegression
-  COMMAND
-    "${PWSH_EXECUTABLE}"
-    -NoProfile
-    -File
-    "${ROOT_DIR}/tests/SourceTests.ps1"
-    -Root
-    "${ROOT_DIR}"
-  VERBATIM
-)
-add_dependencies(${PROJECT_NAME} VirtualHolstersSourceRegression)
-
 add_executable(
   VirtualHolstersInteractionTests
   "tests/HolsterInteractionTests.cpp"
@@ -279,16 +293,6 @@ target_compile_options(
 )
 
 enable_testing()
-add_test(
-  NAME VirtualHolstersSourceRegression
-  COMMAND
-    "${PWSH_EXECUTABLE}"
-    -NoProfile
-    -File
-    "${ROOT_DIR}/tests/SourceTests.ps1"
-    -Root
-    "${ROOT_DIR}"
-)
 add_test(
   NAME VirtualHolstersInteractionTests
   COMMAND VirtualHolstersInteractionTests

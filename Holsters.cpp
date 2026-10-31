@@ -11,12 +11,15 @@
 #include "VRHook.h"
 #include "VRSceneGraph.h"
 #include "VirtualHolstersAPI.h"
-#include "RIWCompatibility.h"
+#include "NativeEquipment.h"
+#include "RockProvider.h"
 #include "f4se/GameMenus.h"
 #include "ConfigModeMenu.h"
 #include "MenuChecker.h"
 #include "InvSorting.h"
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <iostream>
 #include <fstream>
 #include <memory>
@@ -195,18 +198,66 @@ namespace Holsters {
 		SlotPolicy::SlotMask s_enabledHolsterSlots =
 			SlotPolicy::kAllSlotsMask;
 
+		using Clock = std::chrono::steady_clock;
+
+		// A holster draw waits this long for ROCK or the engine to put the
+		// weapon in the hand before the slot keeps its weapon again.
+		constexpr auto kDrawTimeout = std::chrono::milliseconds(2000);
+		// A weapon put away from a hand eases into its holster pose.
+		constexpr float kHolsterBlendSeconds = 0.18F;
+		constexpr float kHolsterHapticSeconds = 0.03F;
+
 		struct HandInteractionRuntime
 		{
 			Interaction::HolsterGesture gesture{};
 			UInt32 zone{};
 			bool anchorAvailable{};
+			// The current press started inside a zone; ROCK input stays
+			// reserved for that hand until the button is released.
+			bool pressFromZone{};
 		};
 
-		struct HolsterActionState
+		// What a hand holds, from ROCK with ROCK bound, else the single
+		// vanilla weapon in the configured weapon hand.
+		struct HandWeaponFacts
 		{
-			bool available{};
-			bool occupied{};
-			bool hasEquippedWeapon{};
+			bool known{};
+			bool holds{};
+			bool canReceive{};
+			UInt32 nativeIndex{};
+			UInt32 formId{};
+		};
+
+		enum class HolsterAction : std::uint8_t
+		{
+			kNone,
+			kHolster,
+			kDraw,
+			kSwap
+		};
+
+		// One running draw (or swap) per hand. The slot keeps its tag and
+		// display until the weapon is in the hand, so a refused or failed equip
+		// never empties a holster and the weapon never disappears in between.
+		struct HandTransfer
+		{
+			bool active{};
+			bool requested{};
+			bool isLeft{};
+			UInt32 slot{};
+			UInt32 formId{};
+			std::string name;
+			std::uint64_t command{};
+			Clock::time_point deadline{};
+			// Swap: the weapon leaving the hand takes the slot on success. Its
+			// clone stays hidden and follows the hand's model until the stored
+			// weapon is presented, so the two never show at once.
+			MyWeapon* outgoing{};
+			std::string outgoingName;
+			UInt16 outgoingNameLength{};
+			bool outgoingHidden{};
+			UInt32 outgoingIndex{};
+			UInt32 outgoingFormId{};
 		};
 
 		struct GrabSettingSnapshot
@@ -223,6 +274,179 @@ namespace Holsters {
 		HandInteractionRuntime s_rightHand;
 		GrabSettingSnapshot s_grabSettingSnapshot;
 		bool s_activationSuppressed = false;
+		std::array<HandTransfer, 2> s_transfers{};   // [0] right, [1] left
+		Clock::time_point s_lastFrame{};
+		float s_frameSeconds = 0.0F;
+		Clock::time_point s_fistsPressedUntil{};
+		Clock::time_point s_menuCheckUntil{};
+		Clock::time_point s_infoPressedUntil{};
+
+		HandTransfer& TransferFor(const bool isLeft) noexcept
+		{
+			return s_transfers[isLeft ? 1 : 0];
+		}
+
+		// FO4VR stores child axes as matrix rows: a local vector maps to world
+		// as Transpose()*v (raw compose helper 0x1401A8D60, as ROCK verifies).
+		NiPoint3 LocalVectorToWorld(const NiMatrix43& m, const NiPoint3& v) noexcept
+		{
+			return NiPoint3(
+				m.data[0][0] * v.x + m.data[1][0] * v.y + m.data[2][0] * v.z,
+				m.data[0][1] * v.x + m.data[1][1] * v.y + m.data[2][1] * v.z,
+				m.data[0][2] * v.x + m.data[1][2] * v.y + m.data[2][2] * v.z);
+		}
+
+		NiPoint3 WorldVectorToLocal(const NiMatrix43& m, const NiPoint3& v) noexcept
+		{
+			return NiPoint3(
+				m.data[0][0] * v.x + m.data[0][1] * v.y + m.data[0][2] * v.z,
+				m.data[1][0] * v.x + m.data[1][1] * v.y + m.data[1][2] * v.z,
+				m.data[2][0] * v.x + m.data[2][1] * v.y + m.data[2][2] * v.z);
+		}
+
+		// Stored-row product: the engine's world rotation is child * parent.
+		NiMatrix43 MultiplyStored(const NiMatrix43& lhs, const NiMatrix43& rhs) noexcept
+		{
+			NiMatrix43 result{};
+			for (int row = 0; row < 3; ++row) {
+				for (int column = 0; column < 3; ++column) {
+					result.data[row][column] =
+						lhs.data[row][0] * rhs.data[0][column] +
+						lhs.data[row][1] * rhs.data[1][column] +
+						lhs.data[row][2] * rhs.data[2][column];
+				}
+				result.data[row][3] = 0.0F;
+			}
+			return result;
+		}
+
+		NiPoint3 LocalPointToWorld(const NiTransform& parent, const NiPoint3& local) noexcept
+		{
+			const NiPoint3 offset = LocalVectorToWorld(parent.rot, local);
+			return NiPoint3(
+				parent.pos.x + offset.x * parent.scale,
+				parent.pos.y + offset.y * parent.scale,
+				parent.pos.z + offset.z * parent.scale);
+		}
+
+		// The local transform that places a child of `parent` at `world`.
+		bool LocalFromWorld(const NiTransform& parent, const NiTransform& world, NiTransform& local) noexcept
+		{
+			if (!std::isfinite(parent.scale) || std::fabs(parent.scale) < 0.0001F) {
+				return false;
+			}
+			const float inverseScale = 1.0F / parent.scale;
+			local.rot = MultiplyStored(world.rot, parent.rot.Transpose());
+			const NiPoint3 delta(
+				world.pos.x - parent.pos.x,
+				world.pos.y - parent.pos.y,
+				world.pos.z - parent.pos.z);
+			local.pos = WorldVectorToLocal(parent.rot, delta);
+			local.pos.x *= inverseScale;
+			local.pos.y *= inverseScale;
+			local.pos.z *= inverseScale;
+			local.scale = world.scale * inverseScale;
+			return std::isfinite(local.pos.x) && std::isfinite(local.pos.y) &&
+				std::isfinite(local.pos.z) && std::isfinite(local.scale);
+		}
+
+		struct Quaternion
+		{
+			float w{ 1.0F }, x{}, y{}, z{};
+		};
+
+		Quaternion ToQuaternion(const NiMatrix43& m) noexcept
+		{
+			const float (*r)[4] = m.data;
+			Quaternion q{};
+			const float trace = r[0][0] + r[1][1] + r[2][2];
+			if (trace > 0.0F) {
+				const float s = std::sqrt(trace + 1.0F) * 2.0F;
+				q.w = 0.25F * s;
+				q.x = (r[2][1] - r[1][2]) / s;
+				q.y = (r[0][2] - r[2][0]) / s;
+				q.z = (r[1][0] - r[0][1]) / s;
+			} else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
+				const float s = std::sqrt(1.0F + r[0][0] - r[1][1] - r[2][2]) * 2.0F;
+				q.w = (r[2][1] - r[1][2]) / s;
+				q.x = 0.25F * s;
+				q.y = (r[0][1] + r[1][0]) / s;
+				q.z = (r[0][2] + r[2][0]) / s;
+			} else if (r[1][1] > r[2][2]) {
+				const float s = std::sqrt(1.0F + r[1][1] - r[0][0] - r[2][2]) * 2.0F;
+				q.w = (r[0][2] - r[2][0]) / s;
+				q.x = (r[0][1] + r[1][0]) / s;
+				q.y = 0.25F * s;
+				q.z = (r[1][2] + r[2][1]) / s;
+			} else {
+				const float s = std::sqrt(1.0F + r[2][2] - r[0][0] - r[1][1]) * 2.0F;
+				q.w = (r[1][0] - r[0][1]) / s;
+				q.x = (r[0][2] + r[2][0]) / s;
+				q.y = (r[1][2] + r[2][1]) / s;
+				q.z = 0.25F * s;
+			}
+			return q;
+		}
+
+		NiMatrix43 FromQuaternion(const Quaternion& q) noexcept
+		{
+			NiMatrix43 m{};
+			m.data[0][0] = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
+			m.data[0][1] = 2.0F * (q.x * q.y - q.z * q.w);
+			m.data[0][2] = 2.0F * (q.x * q.z + q.y * q.w);
+			m.data[1][0] = 2.0F * (q.x * q.y + q.z * q.w);
+			m.data[1][1] = 1.0F - 2.0F * (q.x * q.x + q.z * q.z);
+			m.data[1][2] = 2.0F * (q.y * q.z - q.x * q.w);
+			m.data[2][0] = 2.0F * (q.x * q.z - q.y * q.w);
+			m.data[2][1] = 2.0F * (q.y * q.z + q.x * q.w);
+			m.data[2][2] = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
+			return m;
+		}
+
+		NiMatrix43 SlerpRotation(const NiMatrix43& from, const NiMatrix43& to, const float t) noexcept
+		{
+			Quaternion a = ToQuaternion(from);
+			Quaternion b = ToQuaternion(to);
+			float dot = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+			if (dot < 0.0F) {
+				b = { -b.w, -b.x, -b.y, -b.z };
+				dot = -dot;
+			}
+			Quaternion q{};
+			if (dot > 0.9995F) {
+				q = { a.w + (b.w - a.w) * t, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+			} else {
+				const float theta = std::acos(dot);
+				const float sinTheta = std::sin(theta);
+				const float wa = std::sin((1.0F - t) * theta) / sinTheta;
+				const float wb = std::sin(t * theta) / sinTheta;
+				q = { a.w * wa + b.w * wb, a.x * wa + b.x * wb, a.y * wa + b.y * wb, a.z * wa + b.z * wb };
+			}
+			const float length = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+			if (length > 0.0001F) {
+				q = { q.w / length, q.x / length, q.y / length, q.z / length };
+			}
+			return FromQuaternion(q);
+		}
+
+		NiTransform BlendTransforms(const NiTransform& from, const NiTransform& to, const float t) noexcept
+		{
+			NiTransform result{};
+			result.rot = SlerpRotation(from.rot, to.rot, t);
+			result.pos = NiPoint3(
+				from.pos.x + (to.pos.x - from.pos.x) * t,
+				from.pos.y + (to.pos.y - from.pos.y) * t,
+				from.pos.z + (to.pos.z - from.pos.z) * t);
+			result.scale = from.scale + (to.scale - from.scale) * t;
+			return result;
+		}
+
+		void PulseHand(const bool isLeft)
+		{
+			if (ghapticsEnabled && VRHook::g_vrHook) {
+				VRHook::g_vrHook->StartHaptics(isLeft ? 1 : 2, kHolsterHapticSeconds, c_hapticIntensity);
+			}
+		}
 
 		const HandInteractionRuntime& GetHandRuntime(
 			const bool isLeft) noexcept
@@ -378,63 +602,485 @@ namespace Holsters {
 			}
 		}
 
-		HolsterActionState GetHolsterActionState(const UInt32 slot)
+		// Defined with the weapon display functions below.
+		NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, UInt32 handle,
+			const char* nodeName, const NiTransform* startWorld);
+		void attachHolsterArt(MyWeapon& record, UInt32 handle);
+		void releaseWeaponClone(MyWeapon*& record);
+
+		bool SlotAvailable(const UInt32 slot) noexcept
 		{
-			if (slot < 1 || slot > kMaximumHolsterSlots ||
-				!isHolsterSlotEnabled(slot) ||
-				!HolsterContainers[slot] ||
-				!(*g_player) ||
-				!(*g_gameVM) ||
-				!(*g_gameVM)->m_virtualMachine) {
-				return {};
+			return slot >= 1 && slot <= kMaximumHolsterSlots &&
+				isHolsterSlotEnabled(slot) && HolsterContainers[slot] && *g_player;
+		}
+
+		HandWeaponFacts GetHandWeaponFacts(const bool isLeft)
+		{
+			HandWeaponFacts facts{};
+			if (Rock::IsBound()) {
+				// ROCK owns hand assignment; act only on its current publication.
+				if (!Rock::IsActive()) {
+					return facts;
+				}
+				const auto weapon = Rock::GetHandWeapon(isLeft);
+				facts.known = true;
+				facts.holds = weapon.role == Rock::HandRole::kFiring &&
+					weapon.formId != 0 && weapon.slot <= 1;
+				facts.canReceive = weapon.role != Rock::HandRole::kSupport;
+				facts.nativeIndex = facts.holds ? weapon.slot : 0;
+				facts.formId = facts.holds ? weapon.formId : 0;
+				return facts;
 			}
-
-			HolsterActionState state{
-				true,
-				holsteredWeapNames[slot] != "Empty",
-				false
-			};
-			if ((*g_player)->actorState.IsWeaponDrawn()) {
-				state.hasEquippedWeapon =
-					Offsets::GetEquippedWeapon(
-						(*g_gameVM)->m_virtualMachine,
-						0,
-						*g_player,
-						0) != nullptr;
+			if (!*g_player || !*g_gameVM || !(*g_gameVM)->m_virtualMachine) {
+				return facts;
 			}
-
-			return state;
+			// Vanilla FO4VR holds one weapon, in the configured weapon hand; a
+			// draw into the other hand would replace it.
+			facts.known = true;
+			const bool weaponHand = isLeft == !gIsRightHanded;
+			TESObjectWEAP* drawn = (*g_player)->actorState.IsWeaponDrawn() ?
+				Offsets::GetEquippedWeapon((*g_gameVM)->m_virtualMachine, 0, *g_player, 0) :
+				nullptr;
+			facts.holds = weaponHand && drawn;
+			facts.canReceive = weaponHand || !drawn;
+			facts.formId = drawn ? drawn->formID : 0;
+			return facts;
 		}
 
-		bool IsReleaseActionEligible(const UInt32 slot)
+		bool SlotHasTransfer(const UInt32 slot) noexcept
 		{
-			const auto state = GetHolsterActionState(slot);
-			return state.available &&
-				(state.hasEquippedWeapon ?
-					 !state.occupied :
-					 state.occupied);
-		}
-
-		bool IsPullOutActionEligible(const UInt32 slot)
-		{
-			const auto state = GetHolsterActionState(slot);
-			return state.available &&
-				state.occupied &&
-				!state.hasEquippedWeapon;
-		}
-
-		bool IsSelectedActionEligible(
-			const Interaction::HandAction& action)
-		{
-			switch (action.kind) {
-			case Interaction::GestureActionKind::kReleaseInZone:
-				return IsReleaseActionEligible(action.slot);
-			case Interaction::GestureActionKind::kPullOut:
-				return IsPullOutActionEligible(action.slot);
-			case Interaction::GestureActionKind::kNone:
-				return false;
+			for (const auto& transfer : s_transfers) {
+				if (transfer.active && transfer.slot == slot) {
+					return true;
+				}
 			}
 			return false;
+		}
+
+		std::array<bool, 8> BusySlots() noexcept
+		{
+			std::array<bool, 8> busy{};
+			for (const auto& transfer : s_transfers) {
+				if (transfer.active && transfer.slot < busy.size()) {
+					busy[transfer.slot] = true;
+				}
+			}
+			return busy;
+		}
+
+		HolsterAction DecideAction(
+			const Interaction::GestureActionKind kind,
+			const UInt32 slot,
+			const bool isLeft,
+			const HandWeaponFacts& facts)
+		{
+			if (!facts.known || !SlotAvailable(slot) ||
+				TransferFor(isLeft).active || SlotHasTransfer(slot)) {
+				return HolsterAction::kNone;
+			}
+			const bool occupied = holsteredWeapNames[slot] != "Empty";
+			switch (kind) {
+			case Interaction::GestureActionKind::kPullOut:
+				return occupied && !facts.holds && facts.canReceive ?
+					HolsterAction::kDraw :
+					HolsterAction::kNone;
+			case Interaction::GestureActionKind::kReleaseInZone:
+				if (facts.holds) {
+					return occupied ? HolsterAction::kSwap : HolsterAction::kHolster;
+				}
+				return occupied && facts.canReceive ?
+					HolsterAction::kDraw :
+					HolsterAction::kNone;
+			case Interaction::GestureActionKind::kNone:
+				break;
+			}
+			return HolsterAction::kNone;
+		}
+
+		// Where the hand's weapon model is on screen now. The first weapon's
+		// model is rendered where its node stands. ROCK re-places the second
+		// weapon's model late in the frame after the engine returns it to its
+		// biped carry, so its last placement comes from ROCK (getGrip(1) is
+		// that model's own world).
+		bool CaptureHeldWeapon(const HandWeaponFacts& facts, NiNode*& model, NiTransform& world)
+		{
+			model = static_cast<NiNode*>(
+				NativeEquipment::FindEquippedModel(facts.nativeIndex, facts.formId));
+			Rock::WeaponWorld placed{};
+			if (model && facts.nativeIndex == 1 && Rock::IsActive() && Rock::GetWeaponWorld(1, placed)) {
+				for (int row = 0; row < 3; ++row) {
+					for (int column = 0; column < 3; ++column) {
+						world.rot.data[row][column] = placed.rotate[row * 3 + column];
+					}
+					world.rot.data[row][3] = 0.0F;
+				}
+				world.pos = NiPoint3(placed.translate[0], placed.translate[1], placed.translate[2]);
+				world.scale = placed.scale;
+				return model != nullptr;
+			}
+			if (model) {
+				world = model->m_worldTransform;
+			}
+			return model != nullptr;
+		}
+
+		WeaponStack FindHandStack(const HandWeaponFacts& facts)
+		{
+			if (!facts.holds || facts.nativeIndex > 1) {
+				return {};
+			}
+			const auto equipped = NativeEquipment::ReadEquippedWeapons()[facts.nativeIndex];
+			if (equipped.formId != facts.formId) {
+				_WARNING("Holster refused: hand weapon %08X is not native index %u (%08X)",
+					facts.formId, facts.nativeIndex, equipped.formId);
+				return {};
+			}
+			return FindEquippedStack(facts.formId, equipped.instance);
+		}
+
+		bool UnequipHandWeapon(const HandWeaponFacts& facts, const WeaponStack& stack)
+		{
+			if (Rock::IsBound()) {
+				return Rock::UnequipWeapon(facts.nativeIndex, facts.formId) == Rock::Result::kOk;
+			}
+			return NativeUnequip(stack);
+		}
+
+		// The hand's weapon goes into the empty slot. The clone appears where
+		// the hand held the weapon in the frame the weapon leaves the hand, so
+		// it never disappears, then eases into the holster.
+		bool HolsterHandWeapon(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts)
+		{
+			const WeaponStack stack = FindHandStack(facts);
+			if (!stack.found) {
+				_WARNING("Holster %u refused: the %s hand's weapon stack was not found", slot, isLeft ? "left" : "right");
+				return false;
+			}
+			if (!CanTagAnother(stack.name, true)) {
+				_MESSAGE("Holster %u refused: every '%s' is already holstered", slot, stack.name.c_str());
+				return false;
+			}
+			NiNode* model = nullptr;
+			NiTransform world{};
+			const bool captured = CaptureHeldWeapon(facts, model, world);
+			nDestoryWeapon(slot, true, false);
+			if (gShowWeapons && captured) {
+				nRegisterWeapon(stack.form->GetFullName(), stack.form, model, slot, stack.melee, &world);
+			}
+			const auto registered = WeaponRegisteredObjects.find(slot);
+			const bool presented = registered != WeaponRegisteredObjects.end() &&
+				registered->second && registered->second->WeapMesh;
+			if (!UnequipHandWeapon(facts, stack)) {
+				_WARNING("Holster %u refused: the %s hand's weapon %08X could not be unequipped",
+					slot, isLeft ? "left" : "right", facts.formId);
+				nDestoryWeapon(slot, true, false);
+				return false;
+			}
+			SetHolsterTag(slot, stack.name, stack.nameLength);
+			if (gShowWeapons && !presented) {
+				QueueStoredVisual(FindStoredStack(stack.name), slot);
+			}
+			PulseHand(isLeft);
+			_MESSAGE("Holster %u stored '%s' from the %s hand (index %u)",
+				slot, stack.name.c_str(), isLeft ? "left" : "right", facts.nativeIndex);
+			return true;
+		}
+
+		bool RequestDraw(HandTransfer& transfer)
+		{
+			const WeaponStack stored = FindStoredStack(transfer.name);
+			if (!stored.found) {
+				return false;
+			}
+			if (Rock::IsBound()) {
+				std::uint64_t command = 0;
+				const auto result = Rock::RequestEquip(
+					transfer.isLeft, stored.form->formID, static_cast<std::uint32_t>(stored.stackID), command);
+				if (result == Rock::Result::kBusy) {
+					return true;  // retried next frame until the deadline
+				}
+				if (result != Rock::Result::kQueued) {
+					return false;
+				}
+				transfer.command = command;
+				transfer.requested = true;
+				return true;
+			}
+			transfer.requested = NativeEquip(stored);
+			return transfer.requested;
+		}
+
+		// The stored weapon goes into the hand. With swap, the hand's weapon
+		// takes the slot once the stored one is in the hand.
+		bool BeginDraw(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts, const bool swap)
+		{
+			auto& transfer = TransferFor(isLeft);
+			transfer = {};
+			transfer.active = true;
+			transfer.isLeft = isLeft;
+			transfer.slot = slot;
+			transfer.name = holsteredWeapNames[slot];
+			transfer.deadline = Clock::now() + kDrawTimeout;
+			const WeaponStack stored = FindStoredStack(transfer.name);
+			if (!stored.found) {
+				transfer = {};
+				ReconcileHolsterTags(BusySlots());
+				return false;
+			}
+			transfer.formId = stored.form->formID;
+
+			if (swap) {
+				const WeaponStack outgoing = FindHandStack(facts);
+				if (!outgoing.found ||
+					(outgoing.name != transfer.name && !CanTagAnother(outgoing.name, true))) {
+					transfer = {};
+					return false;
+				}
+				transfer.outgoingName = outgoing.name;
+				transfer.outgoingNameLength = outgoing.nameLength;
+				NiNode* model = nullptr;
+				NiTransform world{};
+				if (gShowWeapons && CaptureHeldWeapon(facts, model, world)) {
+					auto* record = new MyWeapon(
+						FindNode(gInPowerArmor ? PAWeaponBones[slot].c_str() : WeaponBones[slot].c_str()),
+						HolsterNames[slot].c_str(), outgoing.melee, outgoing.form->GetFullName(), outgoing.form->formID);
+					const std::string nodeName = HolsterNames[slot] + "Swap";
+					if (record->wbone && attachWeaponClone(*record, model, slot, nodeName.c_str(), &world)) {
+						record->WeapMesh->flags |= 0x1;
+						record->blending = false;
+						transfer.outgoing = record;
+						transfer.outgoingHidden = true;
+						transfer.outgoingIndex = facts.nativeIndex;
+						transfer.outgoingFormId = facts.formId;
+					} else {
+						delete record;
+					}
+				}
+			}
+
+			if (!RequestDraw(transfer)) {
+				releaseWeaponClone(transfer.outgoing);
+				_WARNING("Holster %u draw refused for '%s'", slot, transfer.name.c_str());
+				transfer = {};
+				return false;
+			}
+			return true;
+		}
+
+		void AbortTransfer(HandTransfer& transfer, const char* reason)
+		{
+			_WARNING("Holster %u draw of '%s' into the %s hand ended without the weapon: %s",
+				transfer.slot, transfer.name.c_str(), transfer.isLeft ? "left" : "right", reason);
+			if (transfer.command) {
+				Rock::CancelEquip(transfer.command);
+			}
+			releaseWeaponClone(transfer.outgoing);
+			const UInt32 slot = transfer.slot;
+			transfer = {};
+			// The weapon stays holstered; restore a display hidden early.
+			if (gShowWeapons && holsteredWeapNames[slot] != "Empty" &&
+				WeaponRegisteredObjects.find(slot) == WeaponRegisteredObjects.end()) {
+				QueueStoredVisual(FindStoredStack(holsteredWeapNames[slot]), slot);
+			}
+		}
+
+		// While the outgoing weapon is still in the hand, its hidden clone
+		// starts from wherever the hand holds it this frame.
+		void TrackOutgoing(HandTransfer& transfer)
+		{
+			if (!transfer.outgoing || !transfer.outgoingHidden || !transfer.outgoing->WeapMesh) {
+				return;
+			}
+			HandWeaponFacts facts{};
+			facts.known = true;
+			facts.holds = true;
+			facts.nativeIndex = transfer.outgoingIndex;
+			facts.formId = transfer.outgoingFormId;
+			NiNode* model = nullptr;
+			NiTransform world{};
+			NiTransform start{};
+			if (CaptureHeldWeapon(facts, model, world) &&
+				LocalFromWorld(transfer.outgoing->wbone->m_worldTransform, world, start)) {
+				transfer.outgoing->blendFrom = start;
+				transfer.outgoing->WeapMesh->m_localTransform = start;
+			}
+		}
+
+		void RevealOutgoing(HandTransfer& transfer)
+		{
+			if (!transfer.outgoing || !transfer.outgoingHidden || !transfer.outgoing->WeapMesh) {
+				return;
+			}
+			transfer.outgoingHidden = false;
+			transfer.outgoing->WeapMesh->flags &= ~0x1;
+			transfer.outgoing->blendElapsed = 0.0F;
+			transfer.outgoing->blendDuration = kHolsterBlendSeconds;
+			transfer.outgoing->blending = true;
+		}
+
+		void CompleteTransfer(HandTransfer& transfer)
+		{
+			RevealOutgoing(transfer);
+			const UInt32 slot = transfer.slot;
+			const bool hadDisplay = WeaponRegisteredObjects.find(slot) != WeaponRegisteredObjects.end();
+			nDestoryWeapon(slot, true, hadDisplay);
+			if (transfer.outgoing || !transfer.outgoingName.empty()) {
+				SetHolsterTag(slot, transfer.outgoingName, transfer.outgoingNameLength);
+				if (transfer.outgoing && transfer.outgoing->WeapMesh) {
+					transfer.outgoing->WeapMesh->m_name = HolsterNames[slot].c_str();
+					WeaponRegisteredObjects[slot] = transfer.outgoing;
+					VisualArt[slot] = transfer.outgoing->WeaponName.c_str();
+					lastInHolster[slot] = transfer.outgoing->ThisForm;
+					attachHolsterArt(*transfer.outgoing, slot);
+					transfer.outgoing = nullptr;
+				} else if (gShowWeapons) {
+					releaseWeaponClone(transfer.outgoing);
+					QueueStoredVisual(FindStoredStack(transfer.outgoingName), slot);
+				}
+			} else {
+				resetHolsterName(slot);
+			}
+			PulseHand(transfer.isLeft);
+			_MESSAGE("Holster %u drew '%s' into the %s hand", slot, transfer.name.c_str(), transfer.isLeft ? "left" : "right");
+			transfer = {};
+		}
+
+		// The holster display hides on the frame the weapon is presented in
+		// the hand; the tag clears only once the equip has succeeded.
+		void HidePresentedDisplay(const HandTransfer& transfer)
+		{
+			const auto registered = WeaponRegisteredObjects.find(transfer.slot);
+			if (registered != WeaponRegisteredObjects.end()) {
+				nDestoryWeapon(transfer.slot, true, true);
+			}
+		}
+
+		void ServiceTransfers()
+		{
+			const auto now = Clock::now();
+			for (auto& transfer : s_transfers) {
+				if (!transfer.active) {
+					continue;
+				}
+				if (!transfer.requested) {
+					if (now > transfer.deadline) {
+						AbortTransfer(transfer, "the equip was never admitted");
+					} else if (!RequestDraw(transfer)) {
+						AbortTransfer(transfer, "the equip was refused");
+					}
+					continue;
+				}
+				if (Rock::IsBound()) {
+					const auto progress = Rock::PollEquip(transfer.command);
+					if (progress == Rock::EquipProgress::kPending) {
+						TrackOutgoing(transfer);
+					}
+					switch (progress) {
+					case Rock::EquipProgress::kPresented:
+						HidePresentedDisplay(transfer);
+						RevealOutgoing(transfer);
+						break;
+					case Rock::EquipProgress::kSucceeded:
+						CompleteTransfer(transfer);
+						continue;
+					case Rock::EquipProgress::kFailed:
+						transfer.command = 0;
+						AbortTransfer(transfer, "ROCK reported the equip failed");
+						continue;
+					case Rock::EquipProgress::kPending:
+						break;
+					}
+				} else {
+					TrackOutgoing(transfer);
+					const auto equipped = NativeEquipment::ReadEquippedWeapons()[0];
+					if (equipped.formId == transfer.formId) {
+						CompleteTransfer(transfer);
+						continue;
+					}
+				}
+				if (transfer.active && now > transfer.deadline) {
+					AbortTransfer(transfer, "timed out");
+				}
+			}
+		}
+
+		void CancelTransfers()
+		{
+			for (auto& transfer : s_transfers) {
+				if (transfer.active) {
+					if (transfer.command) {
+						Rock::CancelEquip(transfer.command);
+					}
+					releaseWeaponClone(transfer.outgoing);
+					transfer = {};
+				}
+			}
+		}
+
+		void AdvanceBlend(MyWeapon& weapon)
+		{
+			if (!weapon.blending || !weapon.WeapMesh) {
+				weapon.blending = false;
+				return;
+			}
+			weapon.blendElapsed += s_frameSeconds;
+			const float linear = weapon.blendDuration > 0.0F ?
+				(std::min)(1.0F, weapon.blendElapsed / weapon.blendDuration) :
+				1.0F;
+			const float eased = linear * linear * (3.0F - 2.0F * linear);
+			weapon.WeapMesh->m_localTransform = linear >= 1.0F ?
+				weapon.blendTo :
+				BlendTransforms(weapon.blendFrom, weapon.blendTo, eased);
+			if (linear >= 1.0F) {
+				weapon.blending = false;
+			}
+		}
+
+		void UpdateWeaponBlends()
+		{
+			for (auto& [slot, weapon] : WeaponRegisteredObjects) {
+				(void)slot;
+				if (weapon) {
+					AdvanceBlend(*weapon);
+				}
+			}
+			for (auto& transfer : s_transfers) {
+				if (transfer.outgoing) {
+					AdvanceBlend(*transfer.outgoing);
+				}
+			}
+		}
+
+		void FinishWeaponBlends()
+		{
+			for (auto& [slot, weapon] : WeaponRegisteredObjects) {
+				(void)slot;
+				if (weapon && weapon->blending && weapon->WeapMesh) {
+					weapon->WeapMesh->m_localTransform = weapon->blendTo;
+					weapon->blending = false;
+				}
+			}
+		}
+
+		// ROCK must not grab, drop, stash or act on the holster button with a
+		// hand working a holster, including a pull-out that has left the zone.
+		void ReserveRockInput(const bool isLeft, const HandInteractionRuntime& hand, const bool actionPossible)
+		{
+			if (!Rock::IsBound()) {
+				return;
+			}
+			const auto phase = hand.gesture.Phase();
+			const bool heldFromZone = hand.pressFromZone &&
+				(phase == Interaction::GesturePhase::kHeld || phase == Interaction::GesturePhase::kConsumed);
+			if (!actionPossible && !heldFromZone) {
+				return;
+			}
+			const auto mask = vr::ButtonMaskFromId(static_cast<vr::EVRButtonId>(c_holsterButtonID));
+			Rock::ReserveHand(
+				isLeft,
+				c_holsterButtonID == vr::EVRButtonId::k_EButton_Grip,
+				mask,
+				hand.zone == 1 || hand.zone == 2);
 		}
 	}
 
@@ -443,7 +1089,10 @@ namespace Holsters {
 	void resetInteractionState() {
 		s_leftHand.gesture.Reset();
 		s_rightHand.gesture.Reset();
-		RIWCompatibility::ResetPendingRequest();
+		s_leftHand.pressFromZone = false;
+		s_rightHand.pressFromZone = false;
+		CancelTransfers();
+		Rock::Reset();
 		ClearHandContacts();
 		SetActivationSuppressed(false);
 	}
@@ -462,6 +1111,12 @@ namespace Holsters {
 
 	UInt32 getHandHolster(const bool isLeft) {
 		return GetHandRuntime(isLeft).zone;
+	}
+
+	NiPoint3 HolsterCenterWorld(const MyHolster& holster) {
+		return holster.bone ?
+			LocalPointToWorld(holster.bone->m_worldTransform, holster.offset) :
+			NiPoint3(0.0F, 0.0F, 0.0F);
 	}
 
 	bool initBoneTree() {
@@ -508,9 +1163,26 @@ namespace Holsters {
 				initBoneTreeFlag = false;
 				PlayerLoaded();
 			}
-			if (!_isConfigModeActive && !isGameStopped()) {
-				RIWCompatibility::ServicePendingRequest();
+			const auto now = Clock::now();
+			s_frameSeconds = s_lastFrame == Clock::time_point{} ? 0.0F :
+				(std::min)(0.1F, std::chrono::duration<float>(now - s_lastFrame).count());
+			s_lastFrame = now;
+			if (fistsPressed && now > s_fistsPressedUntil) {
+				fistsPressed = false;
 			}
+			if (MenuCheck && now > s_menuCheckUntil) {
+				MenuCheck = false;
+			}
+			if (infoPressed && now > s_infoPressedUntil) {
+				infoPressed = false;
+				doublepress = 0;
+			}
+			Rock::BeginFrame();
+			ServiceStoredVisuals();
+			if (!_isConfigModeActive && !isGameStopped()) {
+				ServiceTransfers();
+			}
+			UpdateWeaponBlends();
 			detectHolsterSphere();
 			VRButtonsMain();
 			closeMenus();
@@ -542,9 +1214,7 @@ namespace Holsters {
 			}
 			else if (!isVRHMenuOpen() && menuOpenSticky) {
 				menuOpenSticky = false;
-				for (int i = 1; i < 8; i++) {
-					WeapCheck(i);
-				}
+				ReconcileHolsterTags(BusySlots());
 			}
 			BSFixedString pipboyMenu("PipboyMenu");
 			IMenu* menu = (*g_ui)->GetMenu(pipboyMenu);
@@ -554,7 +1224,7 @@ namespace Holsters {
 			else {
 				_isPipboyOpen = false;
 			}
-			//int SitState = Offsets::GetSitState((*g_gameVM)->m_virtualMachine, 0, *g_player);
+			Rock::EndFrame();
 		}
 	}
 
@@ -706,6 +1376,14 @@ namespace Holsters {
 				!_isConfigModeActive &&
 				!isGameStopped() &&
 				!_WeaponHolsterInProgress;
+			const HandWeaponFacts leftFacts = GetHandWeaponFacts(true);
+			const HandWeaponFacts rightFacts = GetHandWeaponFacts(false);
+			const auto pullOutPossible = [](const HandInteractionRuntime& hand, const bool isLeft, const HandWeaponFacts& facts) {
+				return DecideAction(Interaction::GestureActionKind::kPullOut, hand.zone, isLeft, facts) != HolsterAction::kNone;
+			};
+			const auto releasePossible = [](const HandInteractionRuntime& hand, const bool isLeft, const HandWeaponFacts& facts) {
+				return DecideAction(Interaction::GestureActionKind::kReleaseInZone, hand.zone, isLeft, facts) != HolsterAction::kNone;
+			};
 			const bool leftCanArmPullOut =
 				gameplayEnabled &&
 				leftControllerAvailable &&
@@ -713,7 +1391,7 @@ namespace Holsters {
 				leftHolsterHeld &&
 				s_leftHand.gesture.Phase() ==
 					Interaction::GesturePhase::kIdle &&
-				IsPullOutActionEligible(s_leftHand.zone);
+				pullOutPossible(s_leftHand, true, leftFacts);
 			const bool rightCanArmPullOut =
 				gameplayEnabled &&
 				rightControllerAvailable &&
@@ -721,7 +1399,15 @@ namespace Holsters {
 				rightHolsterHeld &&
 				s_rightHand.gesture.Phase() ==
 					Interaction::GesturePhase::kIdle &&
-				IsPullOutActionEligible(s_rightHand.zone);
+				pullOutPossible(s_rightHand, false, rightFacts);
+			for (auto* hand : { &s_leftHand, &s_rightHand }) {
+				const bool held = hand == &s_leftHand ? leftHolsterHeld : rightHolsterHeld;
+				if (!held) {
+					hand->pressFromZone = false;
+				} else if (hand->gesture.Phase() == Interaction::GesturePhase::kIdle) {
+					hand->pressFromZone = hand->zone != Interaction::kNoSlot;
+				}
+			}
 			const auto leftDecision = s_leftHand.gesture.Update({
 				leftControllerAvailable && s_leftHand.anchorAvailable,
 				gameplayEnabled,
@@ -742,6 +1428,14 @@ namespace Holsters {
 				gameplayEnabled &&
 				(s_leftHand.gesture.IsHoldingCandidate() ||
 					s_rightHand.gesture.IsHoldingCandidate()));
+			if (gameplayEnabled) {
+				ReserveRockInput(true, s_leftHand,
+					s_leftHand.zone != Interaction::kNoSlot &&
+						(releasePossible(s_leftHand, true, leftFacts) || pullOutPossible(s_leftHand, true, leftFacts)));
+				ReserveRockInput(false, s_rightHand,
+					s_rightHand.zone != Interaction::kNoSlot &&
+						(releasePossible(s_rightHand, false, rightFacts) || pullOutPossible(s_rightHand, false, rightFacts)));
+			}
 
 			// Gameplay Controls 
 			if (!_isConfigModeActive) {
@@ -761,24 +1455,46 @@ namespace Holsters {
 				}
 				else if (EquipButtonPressed && !_isEquipButtonPressed && !_isPipboyOpen) {
 					_isEquipButtonPressed = true;
-					std::thread t3(FistsTimer, 500);
-					t3.detach();
+					s_fistsPressedUntil = Clock::now() + std::chrono::milliseconds(500);
 					fistsPressed = true;
 				}
 
-				const auto action = Interaction::SelectAction(
-					leftDecision,
-					rightDecision,
-					gIsRightHanded);
-				if (action.HasAction() &&
-					gameplayEnabled &&
-					IsSelectedActionEligible(action)) {
-					gCurHolster = action.slot;
-					WeapSort(action.slot, action.isLeft);
-					if (c_ActivationDisabled) {
-						MenuCheck = true;
-						std::thread t2(CheckMenusTimer);
-						t2.detach();
+				// Each hand acts on its own holster in the same frame; a
+				// hand-directed draw leaves the other hand's weapon in place.
+				const std::pair<const Interaction::GestureDecision*, const HandWeaponFacts*> handInputs[2]{
+					{ &leftDecision, &leftFacts }, { &rightDecision, &rightFacts }
+				};
+				for (int index = 0; index < 2 && gameplayEnabled; ++index) {
+					const bool isLeft = index == 0;
+					const auto& decision = *handInputs[index].first;
+					if (!decision.HasAction()) {
+						continue;
+					}
+					// The other hand may have changed what this hand can reach
+					// this frame (a holster or swap), so read its weapon again.
+					const HandWeaponFacts facts = index == 1 ? GetHandWeaponFacts(false) : *handInputs[index].second;
+					const UInt32 slot = decision.ActionSlot();
+					const HolsterAction action = DecideAction(decision.Kind(), slot, isLeft, facts);
+					bool acted = false;
+					switch (action) {
+					case HolsterAction::kHolster:
+						acted = HolsterHandWeapon(isLeft, slot, facts);
+						break;
+					case HolsterAction::kDraw:
+						acted = BeginDraw(isLeft, slot, facts, false);
+						break;
+					case HolsterAction::kSwap:
+						acted = BeginDraw(isLeft, slot, facts, true);
+						break;
+					case HolsterAction::kNone:
+						break;
+					}
+					if (acted) {
+						gCurHolster = slot;
+						if (c_ActivationDisabled) {
+							MenuCheck = true;
+							s_menuCheckUntil = Clock::now() + std::chrono::milliseconds(1000);
+						}
 					}
 				}
 
@@ -793,6 +1509,7 @@ namespace Holsters {
 					IMenu* menu = (*g_ui)->GetMenu(pipboyMenu);
 					if (!menu) {
 						gCurHolster = dominantHolster;
+						FinishWeaponBlends();
 						setupConfigMode();
 						_isConfigModeActive = true;
 					}
@@ -803,8 +1520,7 @@ namespace Holsters {
 
 				if (ConfigButtonPressed && !_isInfoButtonPressed && _isPipboyOpen) {
 					_isInfoButtonPressed = true;
-					std::thread t4(infoTimer, 350);
-					t4.detach();
+					s_infoPressedUntil = Clock::now() + std::chrono::milliseconds(350);
 					infoPressed = true;
 					if (doublepress < 2) {
 						doublepress++;
@@ -2078,9 +2794,10 @@ namespace Holsters {
 				continue;
 			}
 
-			NiPoint3 center =
-				holster->bone->m_worldTransform.rot * holster->offset;
-			center = holster->bone->m_worldTransform.pos + center;
+			// The same placement the engine gives the sphere attached at this
+			// bone-local offset, so detection matches what is drawn.
+			const NiPoint3 center =
+				LocalPointToWorld(holster->bone->m_worldTransform, holster->offset);
 			if (leftAvailable && leftSampleCount < leftSamples.size()) {
 				leftSamples[leftSampleCount++] = {
 					slot,
@@ -2396,7 +3113,7 @@ namespace Holsters {
 
 	// Visible Weapon Functions
 
-	void hideMagazine(NiNode* original, int handle) {
+	void hideMagazine(NiNode* original, const bool IsWMelee) {
 		original->m_name.c_str();
 		original->m_children.m_emptyRunStart;
 		if (original->m_children.m_emptyRunStart != 0) {
@@ -2406,7 +3123,6 @@ namespace Holsters {
 					BSTriShape* NodeTri = nextNode->GetAsBSTriShape();
 					if (NodeTri) {
 						BSFixedString TriName = NodeTri->m_name;
-						bool IsWMelee = WeaponRegisteredObjects[handle]->isMelee;
 						if (IsWMelee) {
 							for (int i = 0; i < 2; i++) {
 								if (matchSubString(TriName.c_str(), meleeRemovalStrings[i])) {
@@ -2429,7 +3145,7 @@ namespace Holsters {
 						NiNode* nextNodeToCheck = nextNode->GetAsNiNode();
 						if (nextNodeToCheck != nullptr) {
 							if (nextNodeToCheck->m_children.m_emptyRunStart > 0) {
-								hideMagazine(nextNodeToCheck, handle);
+								hideMagazine(nextNodeToCheck, IsWMelee);
 							}
 						}
 					}
@@ -2470,356 +3186,244 @@ namespace Holsters {
 		}
 	}
 
-	void displayWeapon(TESObjectREFR* object, UInt32 handle) {
-		if (WeaponRegisteredObjects[handle]) {
-			_WeaponHolsterInProgress = true;
-			bool isInPowerArmor = detectInPowerArmor();
-			NiNode* bone;
-			NiNode* holsteredW;
-			BSFixedString weapName;
-			weapName = WeaponRegisteredObjects[handle]->WeaponName;
-			BSFixedString NameofHolster;
-			NiNode* Weap = nullptr;
-			std::string artName = "HolsterArt" + std::to_string(handle);
-			NiNode* artToRemove = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode); //Remove any Holster Art applied this slot
-			if (artToRemove) {
-				artToRemove->flags |= 0x1;
-				artToRemove->m_localTransform.scale = 0;
-				VRSceneGraph::RemoveChild(
-					artToRemove->m_parent,
-					artToRemove);
-			}
-			if (!isInPowerArmor) {
-				if (std::any_of(c_WeaponBlacklist[handle].begin(), c_WeaponBlacklist[handle].end(), [weapName](std::string cbl) {return !cbl.compare(weapName); })) { //Check if the current weapon is black listed for this slot and do not display it if it is.
-					std::string yy = weapName;
-					yy = yy + " : IS IN SLOT " + std::to_string(handle) + " BLACKLIST FILE, IT WILL NOT BE DISPLAYED";
-					//_MESSAGE(yy.c_str());
-					_WeaponHolsterInProgress = false;
-					return;
+	namespace
+	{
+		// Name of the power armor piece whose authored poses a slot uses.
+		std::string PowerArmorPieceName(const UInt32 handle) {
+			const int equipSlot = (handle > 4 || handle < 3) ? 11 : (handle == 3 ? 14 : 15);
+			TESForm* equippedItem = (*g_player)->equipData->slots[equipSlot].item;
+			const char* name = equippedItem ? equippedItem->GetFullName() : nullptr;
+			return name ? name : "";
+		}
+
+		// The authored bone-local pose of a weapon in a slot: its own saved
+		// offset, else the slot's default for melee or other weapons.
+		bool ResolveHolsterPose(const UInt32 handle, const MyWeapon& weapon, NiTransform& pose) {
+			auto lookup = g_weaponOffsets->getOffset(FileNameCreation(handle, weapon.ThisForm), normal);
+			if (!lookup.has_value()) {
+				const bool inPowerArmor = detectInPowerArmor();
+				const std::string base = std::string(weapon.isMelee ? "Melee" : "Weapon") + std::to_string(handle);
+				lookup = inPowerArmor ?
+					g_weaponOffsets->getOffset(base + PowerArmorPieceName(handle), powerArmor) :
+					g_weaponOffsets->getOffset(base, noPA);
+				if (!lookup.has_value()) {
+					lookup = inPowerArmor ? g_weaponOffsets->getOffset(base, powerArmor) : g_weaponOffsets->getOffset(base, noPA);
 				}
 			}
-			else {
-				if (std::any_of(c_WeaponBlacklistPA[handle].begin(), c_WeaponBlacklistPA[handle].end(), [weapName](std::string cbl) {return !cbl.compare(weapName); })) { //Check if the current weapon is black listed for this slot and do not display it if it is.
-					std::string yy = weapName;
-					yy = yy + " : IS IN POWER ARMOR SLOT " + std::to_string(handle) + " BLACKLIST FILE, IT WILL NOT BE DISPLAYED";
-					//_MESSAGE(yy.c_str());
-					_WeaponHolsterInProgress = false;
-					return;
-				}
+			if (!lookup.has_value()) {
+				return false;
 			}
-			bone = WeaponRegisteredObjects[handle]->wbone;
-			holsteredW = WeaponRegisteredObjects[handle]->WeapMesh;
-			std::string wN = (weapName.c_str());
-			//lastInHolster[handle] = wN;
-			wN += std::to_string(handle);
-			NameofHolster = WeaponRegisteredObjects[handle]->HolsterName;
-			//_MESSAGE("ABOUT TO CHECK WEAPON NODE");
-			//Weap = (ImportHolster)->GetObjectRootNode()->GetAsNiNode();
-			if (object != nullptr) {
-				Weap = object->GetObjectRootNode()->GetAsNiNode();
-				//_MESSAGE("OBJECT REF USED TO CLONE");
-			}
-			else {
+			pose = lookup.value();
+			return true;
+		}
+
+		// A blending weapon keeps easing toward a moved pose.
+		void ApplyHolsterPose(MyWeapon& weapon, const NiTransform& pose) {
+			if (!weapon.WeapMesh) {
 				return;
 			}
-			if (!Weap) {
-				_WeaponHolsterInProgress = false;
+			if (weapon.blending) {
+				weapon.blendTo = pose;
+			} else {
+				weapon.WeapMesh->m_localTransform = pose;
+			}
+		}
+
+		void StripCollision(NiAVObject* object, const int depth) {
+			if (!object || depth < 0) {
 				return;
 			}
-			bool IsWMelee = WeaponRegisteredObjects[handle]->isMelee;
-			const char* ripper = "Ripper";
-			if (IsWMelee && matchSubString(weapName, ripper) == false) {
-				hideMagazine(Weap, handle);
+			object->m_spCollisionObject = nullptr;
+			NiNode* node = object->GetAsNiNode();
+			if (!node) {
+				return;
 			}
-			else {
-				if (!IsWMelee) {
-					for (int i = 0; i < c_ExcludedMagazines.size(); i++) {
-						std::string str = c_ExcludedMagazines[i];
-						BSFixedString ch = weapName;
-						if (matchSubString(ch, str.c_str())) {
-							hideMagazine(Weap, handle);
-						}
-					}
-				}
+			for (UInt32 i = 0; i < node->m_children.m_emptyRunStart; ++i) {
+				StripCollision(node->m_children.m_data[i], depth - 1);
+			}
+		}
+
+		bool IsBlacklisted(const UInt32 handle, const char* weapName) {
+			const auto& list = gInPowerArmor ? c_WeaponBlacklistPA[handle] : c_WeaponBlacklist[handle];
+			return std::any_of(list.begin(), list.end(), [weapName](const std::string& entry) { return entry == weapName; });
+		}
+
+		void RemoveHolsterArtNode(const UInt32 handle) {
+			const std::string artName = "HolsterArt" + std::to_string(handle);
+			NiNode* art = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
+			if (art) {
+				art->flags |= 0x1;
+				art->m_localTransform.scale = 0;
+				VRSceneGraph::RemoveChild(art->m_parent, art);
+			}
+		}
+
+		NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, const UInt32 handle,
+			const char* nodeName, const NiTransform* startWorld) {
+			if (!source || !record.wbone || IsBlacklisted(handle, record.WeaponName.c_str())) {
+				return nullptr;
 			}
 			NiCloneProcess proc;
 			proc.unk18 = Offsets::cloneAddr1;
 			proc.unk48 = Offsets::cloneAddr2;
-			holsteredW = Offsets::cloneNode(Weap, &proc);
-			if (testclonefix) {
-				clonemeshfix(Weap, holsteredW);
-				std::string aaa = "Original " + std::to_string(c_OriginalNodes.size()) + " Clone " + std::to_string(c_CloneNodes.size());
-				//_MESSAGE(aaa.c_str());
-				for (int i = 0; i < c_OriginalNodes.size(); i++) {
-					if (c_OriginalNodes[i] != nullptr && c_CloneNodes[i] != nullptr) {
-						//_MESSAGE("Getting Parents");
-						NiNode* P = c_OriginalNodes[i]->m_parent;
-						NiNode* CP = c_CloneNodes[i]->m_parent;
-						if (P != nullptr && CP != nullptr) {
-							//_MESSAGE("Parent Found");
-							c_CloneNodes[i]->m_name = c_OriginalNodes[i]->m_name;
-							VRSceneGraph::RemoveChild(
-								P,
-								c_OriginalNodes[i]);
-							VRSceneGraph::RemoveChild(
-								CP,
-								c_CloneNodes[i]);
-							VRSceneGraph::AttachChild(
-								CP,
-								c_OriginalNodes[i],
-								true);
-							Weap->kFlagForceUpdate;
-							holsteredW->kFlagForceUpdate;
-							P = nullptr;
-							CP = nullptr;
-							std::string X = "MESH " + std::to_string(i) + " SWAPPED";
-							//_MESSAGE(X.c_str());
-						}
-					}
-				}
-				c_OriginalNodes.clear();
-				c_CloneNodes.clear();
-				Weap = nullptr;
-				//ImportHolster = nullptr;
+			NiNode* clone = Offsets::cloneNode(source, &proc);
+			if (!clone) {
+				_WARNING("Holster %u display skipped: the weapon model could not be cloned", handle);
+				return nullptr;
 			}
-			if (holsteredW) {
-				holsteredW->m_name = BSFixedString(NameofHolster);
-				NiNode* Weap2 = getChildNode(NameofHolster, (*g_player)->unkF0->rootNode); //Check for accidental spawned clones
-				if (Weap2) {
-					Weap2->m_localTransform.scale = 0;
-					VRSceneGraph::RemoveChild(Weap2->m_parent, Weap2);
-				}
-				holsteredW->m_spCollisionObject = nullptr;  // Remove weapon collision so that holstered weapons do not break when the player uses furniture.
-				VRSceneGraph::AttachChild(bone, holsteredW, true);
-				WeaponRegisteredObjects[handle]->WeapMesh = holsteredW;
-				NiTransform _customTransform;
-				UInt32 WeapForm = WeaponRegisteredObjects[handle]->ThisForm;
-				std::string searchname = FileNameCreation(handle, WeapForm);
-				lastInHolster[handle] = WeapForm;
-				//_MESSAGE(searchname.c_str());
-				auto lookup = g_weaponOffsets->getOffset(searchname, normal);
-				if (lookup.has_value()) {
-					_customTransform = lookup.value();
-					holsteredW->m_localTransform = _customTransform;
-					//_MESSAGE("REGISTER HOLSTERED WEAPON: WEAPON SPECIFIC CONFIG FOUND...");
-					//isInPowerArmor ? _MESSAGE("...FOR POWER ARMOR MODE") : _MESSAGE("...FOR NONE POWER ARMOR MODE");
-				}
-				else {
-					//_MESSAGE("REGISTER HOLSTERED WEAPON: NO CONFIG FOR THIS ITEM FOUND...");
-					//_MESSAGE("APPLYING A DEFAULT PROFILE......");
-					std::string wN2 = IsWMelee ? "Melee" : "Weapon";
-					wN2 += std::to_string(handle);
-					std::string ArmorName;
-					if (isInPowerArmor) {
-						if (handle > 4 || handle < 3) {
-							TESForm* equippedItem = (*g_player)->equipData->slots[11].item;
-							if (equippedItem) {
-								//CurrentEquippedArmor[i][j] = equippedItem->formID;
-								ArmorName = equippedItem->GetFullName();
-								//_MESSAGE(ArmorName.c_str());
-							}
-						}
-						else if (handle == 3) {
-							TESForm* equippedItem = (*g_player)->equipData->slots[14].item;
-							if (equippedItem) {
-								ArmorName = equippedItem->GetFullName();
-							}
-						}
-						else {
-							TESForm* equippedItem = (*g_player)->equipData->slots[15].item;
-							if (equippedItem) {
-								ArmorName = equippedItem->GetFullName();
-							}
-						}
-					}
-					lookup = isInPowerArmor ? g_weaponOffsets->getOffset(wN2 + ArmorName, powerArmor) : g_weaponOffsets->getOffset(wN2, noPA);
-					if (lookup.has_value()) {
-						_customTransform = lookup.value();
-						holsteredW->m_localTransform = _customTransform;
-						//IsWMelee ? _MESSAGE("REGISTER HOLSTERED WEAPON: DEFAULT MELEE CONFIG APPLIED") : _MESSAGE("REGISTER HOLSTERED WEAPON: DEFAULT NON-MELEE CONFIG APPLIED");
-						//detectInPowerArmor() ? _MESSAGE("...FOR POWER ARMOR MODE") : _MESSAGE("...FOR NONE POWER ARMOR MODE");
-						_customTransform = lookup.value();
-						holsteredW->m_localTransform = _customTransform;
-					}
-					else {
-						lookup = isInPowerArmor ? g_weaponOffsets->getOffset(wN2, powerArmor) : g_weaponOffsets->getOffset(wN2, noPA);
-						if (lookup.has_value()) {
-							_customTransform = lookup.value();
-							holsteredW->m_localTransform = _customTransform;
-							//IsWMelee ? _MESSAGE("REGISTER HOLSTERED WEAPON: DEFAULT MELEE CONFIG APPLIED") : _MESSAGE("REGISTER HOLSTERED WEAPON: DEFAULT NON-MELEE CONFIG APPLIED");
-							//detectInPowerArmor() ? _MESSAGE("...FOR POWER ARMOR MODE") : _MESSAGE("...FOR NONE POWER ARMOR MODE");
-							_customTransform = lookup.value();
-							holsteredW->m_localTransform = _customTransform;
-						}
+			// Magazines and blood are hidden on the clone only; the source can
+			// be the weapon still in the player's hand.
+			const bool ripper = matchSubString(record.WeaponName.c_str(), "Ripper");
+			if (record.isMelee && !ripper) {
+				hideMagazine(clone, record.isMelee);
+			} else if (!record.isMelee) {
+				for (const auto& excluded : c_ExcludedMagazines) {
+					if (matchSubString(record.WeaponName.c_str(), excluded.c_str())) {
+						hideMagazine(clone, record.isMelee);
+						break;
 					}
 				}
-				//Add Customer Holster Art if Found
-				std::string currentWeapon = weapName;
-				std::vector<std::string> listOfFiles;
-				std::string noPASearchPathPath = "Data\\Meshes\\VRH\\Holsters\\" + currentWeapon + "\\HolsterArt" + std::to_string(handle) + "*.nif";
-				std::string PASearchPath = "Data\\Meshes\\VRH\\Holsters\\_PA\\" + currentWeapon + "\\HolsterArt" + std::to_string(handle) + "*.nif";
-				std::string finalpath;
-				if (gInPowerArmor) {
-					if (getFileNames(PASearchPath).size() == 0) {
-						if (getFileNames(noPASearchPathPath).size() == 0) {
-							//_MESSAGE("No Holster Art located For this Weapon");
-							_WeaponHolsterInProgress = false;
-							return; // No Artwork found - Nothing else to do
-						}
-						else {
-							listOfFiles = getFileNames(noPASearchPathPath);
-							int maxNumOfArtwork = listOfFiles.size() - 1;
-							PAholsterMaxValue[gCurHolster] = maxNumOfArtwork - 1;
-							std::string filePath;
-							if (holsterArtWorkPresets[handle] > maxNumOfArtwork) {
-								//_MESSAGE("Holster Art Preset not found:: Resetting to default");
-								holsterArtWorkPresets[handle] = 0;
-								std::string fallBack = ("Falling back to file:: " + listOfFiles[holsterArtWorkPresets[handle]]);
-								//_MESSAGE(fallBack.c_str());
-								filePath = "Data/Meshes/VRH/Holsters/" + currentWeapon + "/" + listOfFiles[holsterArtWorkPresets[handle]];
-							}
-							else {
-								filePath = "Data/Meshes/VRH/Holsters/" + currentWeapon + "/" + listOfFiles[holsterArtWorkPresets[handle]];
-							}
-							if (!exists_file(filePath)) {
-								std::string mess = "Loading Failed:: " + filePath;
-								_WeaponHolsterInProgress = false;
-								return; // No Artwork found - Nothing else to do
-							}
-							else {
-								finalpath = filePath;
-							}
-						}
-					}
-					else if (getFileNames(PASearchPath).size() > 0) {
-						listOfFiles = getFileNames(PASearchPath);
-						int maxArtwork = listOfFiles.size() - 1;
-						PAholsterMaxValue[gCurHolster] = (maxArtwork - 1);
-						std::string l = ("Applying PA Holster Art Preset " + std::to_string(PAholsterArtWorkPresets[handle]));
-						//_MESSAGE(l.c_str());
-						std::string filePath;
-						std::string mess = "Max Installed Artwork: " + std::to_string(maxArtwork);
-						//_MESSAGE(mess.c_str());
-						if (PAholsterArtWorkPresets[handle] > maxArtwork) {
-							//_MESSAGE("Holster Art Preset not found:: Resetting to default");
-							PAholsterArtWorkPresets[handle] = 0;
-							std::string fallBack = ("Falling back to file:: " + listOfFiles[PAholsterArtWorkPresets[handle]]);
-							//_MESSAGE(fallBack.c_str());
-							filePath = "Data/Meshes/VRH/Holsters/_PA/" + currentWeapon + "/" + listOfFiles[PAholsterArtWorkPresets[handle]];
+			}
+			// Holstered weapons never collide (furniture, doors, ROCK hands).
+			StripCollision(clone, 32);
+			clone->m_name = nodeName;
+			NiNode* stale = getChildNode(nodeName, (*g_player)->unkF0->rootNode);
+			if (stale) {
+				stale->m_localTransform.scale = 0;
+				VRSceneGraph::RemoveChild(stale->m_parent, stale);
+			}
+			VRSceneGraph::AttachChild(record.wbone, clone, true);
+			record.WeapMesh = clone;
 
-						}
-						else {
-							filePath = "Data/Meshes/VRH/Holsters/_PA/" + currentWeapon + "/" + listOfFiles[PAholsterArtWorkPresets[handle]];
-						}
-						if (!exists_file(filePath)) {
-							std::string mess = "Loading Failed:: " + filePath;
-							_WeaponHolsterInProgress = false;
-							return; // No Artwork found - Nothing else to do
-						}
-						else {
-							finalpath = filePath;
-						}
-					}
-				}
-				else if (getFileNames(noPASearchPathPath).size() == 0) {
-					//_MESSAGE("No Holster Art located For this Weapon");
-					_WeaponHolsterInProgress = false;
-					return;
-				}
-				else {
-					std::string mess = "Searching for Files:: " + noPASearchPathPath;
-					//	_MESSAGE(mess.c_str());
-					listOfFiles = getFileNames(noPASearchPathPath);
-					int maxArtwork = listOfFiles.size() - 1;
-					holsterMaxValue[gCurHolster] = (maxArtwork - 1);
-					std::string filePath;
-					if (holsterArtWorkPresets[handle] > maxArtwork) {
-						//_MESSAGE("Holster Art Preset not found::Resetting to default");
-						holsterArtWorkPresets[handle] = 0;
-						std::string fallBack = ("Falling back to file:: " + listOfFiles[holsterArtWorkPresets[handle]]);
-						//_MESSAGE(fallBack.c_str());
-						filePath = "Data/Meshes/VRH/Holsters/" + currentWeapon + "/" + listOfFiles[holsterArtWorkPresets[handle]];
-					}
-					else {
-						filePath = "Data/Meshes/VRH/Holsters/" + currentWeapon + "/" + listOfFiles[holsterArtWorkPresets[handle]];
-					}
-					if (!exists_file(filePath)) {
-						std::string mess = "Loading Failed:: " + filePath;
-						//_MESSAGE(mess.c_str());
-						_WeaponHolsterInProgress = false;
-						return; // No Artwork found - Nothing else to do
-					}
-					else {
-						finalpath = filePath;
-					}
-				}
-				char* path;
-				path = new char[finalpath.size() + 1];
-				std::copy(finalpath.begin(), finalpath.end(), path);
-				path[finalpath.size()] = '\0';
-				std::string mess = "Loading File:: " + finalpath;
-				//_MESSAGE(mess.c_str());
-				NiNode* retNode = loadNifFromFile(path);
-				NiNode* holArt = Offsets::cloneNode(retNode, &proc);
-				holArt->m_name = artName.c_str();
-				VRSceneGraph::AttachChild(bone, holArt, true);
-				holArt->m_localTransform = holsteredW->m_localTransform;
-				WeaponRegisteredObjects[handle]->ArtMesh = holArt;
-				//_MESSAGE("REGISTER HOLSTERED WEAPON : CUSTOM HOLSTER ART APPLIED");
-				_WeaponHolsterInProgress = false;
+			NiTransform pose{};
+			if (!ResolveHolsterPose(handle, record, pose)) {
+				pose = clone->m_localTransform;
 			}
-			_WeaponHolsterInProgress = false;
+			NiTransform start{};
+			if (startWorld && LocalFromWorld(record.wbone->m_worldTransform, *startWorld, start)) {
+				clone->m_localTransform = start;
+				record.blendFrom = start;
+				record.blendTo = pose;
+				record.blendElapsed = 0.0F;
+				record.blendDuration = kHolsterBlendSeconds;
+				record.blending = true;
+			} else {
+				clone->m_localTransform = pose;
+				record.blending = false;
+			}
+			return clone;
+		}
+
+		void releaseWeaponClone(MyWeapon*& record) {
+			if (!record) {
+				return;
+			}
+			if (record->WeapMesh && record->WeapMesh->m_parent) {
+				record->WeapMesh->flags |= 0x1;
+				record->WeapMesh->m_localTransform.scale = 0;
+				VRSceneGraph::RemoveChild(record->WeapMesh->m_parent, record->WeapMesh);
+			}
+			delete record;
+			record = nullptr;
+		}
+
+		std::string ChooseArtFile(const UInt32 handle, const std::string& weapon) {
+			const std::string normalDir = "Data\\Meshes\\VRH\\Holsters\\" + weapon;
+			const std::string powerArmorDir = "Data\\Meshes\\VRH\\Holsters\\_PA\\" + weapon;
+			const std::string pattern = "\\HolsterArt" + std::to_string(handle) + "*.nif";
+			bool usePowerArmor = false;
+			std::vector<std::string> files;
+			if (gInPowerArmor) {
+				files = getFileNames(powerArmorDir + pattern);
+				usePowerArmor = !files.empty();
+			}
+			if (files.empty()) {
+				files = getFileNames(normalDir + pattern);
+			}
+			if (files.empty()) {
+				return {};
+			}
+			const int maxArtwork = static_cast<int>(files.size()) - 1;
+			int& preset = usePowerArmor ? PAholsterArtWorkPresets[handle] : holsterArtWorkPresets[handle];
+			(usePowerArmor || gInPowerArmor ? PAholsterMaxValue : holsterMaxValue)[gCurHolster] = maxArtwork - 1;
+			if (preset > maxArtwork || preset < 0) {
+				preset = 0;
+			}
+			const std::string path = std::string(usePowerArmor ? "Data/Meshes/VRH/Holsters/_PA/" : "Data/Meshes/VRH/Holsters/") +
+				weapon + "/" + files[preset];
+			return exists_file(path) ? path : std::string{};
+		}
+
+		void attachHolsterArt(MyWeapon& record, const UInt32 handle) {
+			if (!record.WeapMesh || !record.wbone) {
+				return;
+			}
+			std::string path = ChooseArtFile(handle, record.WeaponName.c_str());
+			if (path.empty()) {
+				return;
+			}
+			NiNode* loaded = loadNifFromFile(path.data());
+			if (!loaded) {
+				return;
+			}
+			NiCloneProcess proc;
+			proc.unk18 = Offsets::cloneAddr1;
+			proc.unk48 = Offsets::cloneAddr2;
+			NiNode* art = Offsets::cloneNode(loaded, &proc);
+			if (!art) {
+				return;
+			}
+			const std::string artName = "HolsterArt" + std::to_string(handle);
+			art->m_name = artName.c_str();
+			VRSceneGraph::AttachChild(record.wbone, art, true);
+			art->m_localTransform = record.blending ? record.blendTo : record.WeapMesh->m_localTransform;
+			record.ArtMesh = art;
+		}
+	}
+
+	void displayWeapon(NiNode* source, UInt32 handle, const NiTransform* startWorld) {
+		const auto registered = WeaponRegisteredObjects.find(handle);
+		if (registered == WeaponRegisteredObjects.end() || !registered->second) {
+			return;
+		}
+		_WeaponHolsterInProgress = true;
+		RemoveHolsterArtNode(handle);
+		MyWeapon& record = *registered->second;
+		if (attachWeaponClone(record, source, handle, HolsterNames[handle].c_str(), startWorld)) {
+			lastInHolster[handle] = record.ThisForm;
+			attachHolsterArt(record, handle);
 		}
 		_WeaponHolsterInProgress = false;
 	}
 
 	void nDestoryWeapon(UInt32 handle, bool destroyArt, bool playsound) {
+		CancelStoredVisual(static_cast<int>(handle));
 		if (gShowWeapons) {
-			if (WeaponRegisteredObjects[handle]) {
-				if (playsound) {
-					playSwordSFX(handle);
-				}
-				NiNode* weap = WeaponRegisteredObjects[handle]->WeapMesh;
-				if (weap) {
+			const auto registered = WeaponRegisteredObjects.find(handle);
+			if (registered != WeaponRegisteredObjects.end()) {
+				if (registered->second) {
+					if (playsound) {
+						playSwordSFX(handle);
+					}
+					NiNode* weap = registered->second->WeapMesh;
+					if (weap) {
 						weap->flags |= 0x1;
 						weap->m_localTransform.scale = 0;
-						NiNode* pNode = nullptr;
-						gInPowerArmor ? pNode = getChildNode(PAWeaponBones[handle].c_str(), (*g_player)->unkF0->rootNode) : pNode = getChildNode(WeaponBones[handle].c_str(), (*g_player)->unkF0->rootNode);
-						if (pNode != nullptr) {
-							NiNode* wTBD = getChildNode(HolsterNames[handle].c_str(), (*g_player)->unkF0->rootNode);
-							if (wTBD != nullptr) {
-								_MESSAGE("REMOVING WEAPON");
-								VRSceneGraph::RemoveChild(pNode, wTBD);
-								pNode = nullptr;
-								_MESSAGE("WEAPON REMOVED");
-							}
+						if (weap->m_parent) {
+							VRSceneGraph::RemoveChild(weap->m_parent, weap);
 						}
+					}
+					delete registered->second;
 				}
-				delete WeaponRegisteredObjects[handle];
-				WeaponRegisteredObjects.erase(handle);
-				//_MESSAGE("destroyed Weapon");
+				WeaponRegisteredObjects.erase(registered);
 			}
-			if (destroyArt) {
-				if (*g_player) {
-					if ((*g_player)->unkF0) {
-						if ((*g_player)->unkF0->rootNode) {
-							//std::string artName = "HolsterArt" + std::to_string(handle);
-							NiNode* artToRemove = getChildNode(hArt[handle], (*g_player)->unkF0->rootNode); //Remove any Holster Art applied this slot
-							//NiNode* artToRemove = WeaponRegisteredObjects[handle]->ArtMesh;
-							if (artToRemove) {
-								//_MESSAGE("Found Art");
-								artToRemove->flags |= 0x1;
-								artToRemove->m_localTransform.scale = 0;
-								NiNode* parentNode = nullptr;
-								gInPowerArmor ? parentNode = FindNode(PAWeaponBones[handle].c_str()) : parentNode = FindNode(WeaponBones[handle].c_str());
-								if (parentNode) {
-									VRSceneGraph::RemoveChild(
-										parentNode,
-										artToRemove);
-								}
-								//_MESSAGE("destroyed art");
-							}
-						}
+			if (destroyArt && *g_player && (*g_player)->unkF0 && (*g_player)->unkF0->rootNode) {
+				NiNode* artToRemove = getChildNode(hArt[handle], (*g_player)->unkF0->rootNode); //Remove any Holster Art applied this slot
+				if (artToRemove) {
+					artToRemove->flags |= 0x1;
+					artToRemove->m_localTransform.scale = 0;
+					if (artToRemove->m_parent) {
+						VRSceneGraph::RemoveChild(artToRemove->m_parent, artToRemove);
 					}
 				}
 			}
@@ -2827,123 +3431,52 @@ namespace Holsters {
 	}
 
 	void moveWeapon(int handle) {
-		if (gShowWeapons) {
-			if (WeaponRegisteredObjects[handle]) {
-				NiNode* weap = WeaponRegisteredObjects[handle]->WeapMesh;
-				std::string wN = WeaponRegisteredObjects[handle]->WeaponName;
-				bool IsWMelee = WeaponRegisteredObjects[handle]->isMelee;
-				NiTransform _customTransform;
-				if (weap) {
-					UInt32 WeapForm = WeaponRegisteredObjects[handle]->ThisForm;
-					std::string searchname = FileNameCreation(handle, WeapForm);
-					auto lookup = g_weaponOffsets->getOffset(searchname, normal);
-					if (lookup.has_value()) {
-						_customTransform = lookup.value();
-						weap->m_localTransform = _customTransform;
-						_MESSAGE("EQUIP EVENT MOVE: WEAPON SPECIFIC CONFIG FOUND...");
-						std::string artName = "HolsterArt" + std::to_string(handle);
-						NiNode* artToMove = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
-						if (artToMove) {
-							artToMove->m_localTransform = weap->m_localTransform;
-						}
-					}
-					else {
-						bool isInPowerArmor = detectInPowerArmor();
-						//_MESSAGE("EQUIP EVENT MOVE: NO CONFIG FOR THIS ITEM FOUND...");
-						//_MESSAGE("APPLYING A DEFAULT PROFILE......");
-
-						std::string ArmorName;
-						if (isInPowerArmor) {
-							if (handle > 4 || handle < 3) {
-								TESForm* equippedItem = (*g_player)->equipData->slots[11].item;
-								if (equippedItem) {
-									ArmorName = equippedItem->GetFullName();
-								}
-							}
-							else if (handle == 3) {
-								TESForm* equippedItem = (*g_player)->equipData->slots[14].item;
-								if (equippedItem) {
-									ArmorName = equippedItem->GetFullName();
-								}
-							}
-							else {
-								TESForm* equippedItem = (*g_player)->equipData->slots[15].item;
-								if (equippedItem) {
-									ArmorName = equippedItem->GetFullName();
-								}
-							}
-						}
-						std::string wN2 = IsWMelee ? "Melee" : "Weapon";
-						wN2 += std::to_string(handle);
-						lookup = isInPowerArmor ? g_weaponOffsets->getOffset(wN2 + ArmorName, powerArmor) : g_weaponOffsets->getOffset(wN2, noPA);
-						if (lookup.has_value()) {
-							_customTransform = lookup.value();
-							weap->m_localTransform = _customTransform;
-							//IsWMelee ? _MESSAGE("EQUIP EVENT MOVE: DEFAULT MELEE CONFIG APPLIED") : _MESSAGE("EQUIP EVENT MOVE: DEFAULT NON-MELEE CONFIG APPLIED");
-							std::string artName = "HolsterArt" + std::to_string(handle);
-							NiNode* artToMove = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
-							if (artToMove) {
-								artToMove->m_localTransform = weap->m_localTransform;
-							}
-						}
-						else {
-							lookup = isInPowerArmor ? g_weaponOffsets->getOffset(wN2, powerArmor) : g_weaponOffsets->getOffset(wN2, noPA);
-							if (lookup.has_value()) {
-								_customTransform = lookup.value();
-								weap->m_localTransform = _customTransform;
-								//IsWMelee ? _MESSAGE("EQUIP EVENT MOVE: DEFAULT MELEE CONFIG APPLIED") : _MESSAGE("EQUIP EVENT MOVE: DEFAULT NON-MELEE CONFIG APPLIED");
-								std::string artName = "HolsterArt" + std::to_string(handle);
-								NiNode* artToMove = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
-								if (artToMove) {
-									artToMove->m_localTransform = weap->m_localTransform;
-								}
-							}
-						}
-					}
+		if (!gShowWeapons) {
+			return;
+		}
+		const std::string artName = "HolsterArt" + std::to_string(handle);
+		NiNode* art = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
+		const auto registered = WeaponRegisteredObjects.find(handle);
+		if (registered != WeaponRegisteredObjects.end() && registered->second) {
+			MyWeapon& weapon = *registered->second;
+			NiTransform pose{};
+			if (weapon.WeapMesh && ResolveHolsterPose(handle, weapon, pose)) {
+				ApplyHolsterPose(weapon, pose);
+				if (art) {
+					art->m_localTransform = pose;
 				}
 			}
-			else {
-				std::string artName = "HolsterArt" + std::to_string(handle);
-				NiNode* artToMove = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
-				if (artToMove) {
-					NiTransform _customTransform;
-					std::string searchname = FileNameCreation(handle, lastInHolster[handle]);
-					//_MESSAGE(searchname.c_str());
-					auto lookup = g_weaponOffsets->getOffset(searchname, normal);
-					if (lookup.has_value()) {
-						_customTransform = lookup.value();
-						artToMove->m_localTransform = _customTransform;
-						//_MESSAGE("EQUIP EVENT MOVE: HOLSTER SPECIFIC CONFIG FOUND...MOVING");
-					}
-					else {
-						artToMove->flags |= 0x1;
-						artToMove->m_localTransform.scale = 0;
-						VRSceneGraph::RemoveChild(
-							artToMove->m_parent,
-							artToMove);
-						//_MESSAGE("EQUIP EVENT MOVE: NO HOLSTER SPECIFIC CONFIG FOUND...DESTROYING");
-					}
-				}
+			return;
+		}
+		if (art) {
+			auto lookup = g_weaponOffsets->getOffset(FileNameCreation(handle, lastInHolster[handle]), normal);
+			if (lookup.has_value()) {
+				art->m_localTransform = lookup.value();
+			} else {
+				art->flags |= 0x1;
+				art->m_localTransform.scale = 0;
+				VRSceneGraph::RemoveChild(art->m_parent, art);
 			}
 		}
 	}
 
-	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, TESObjectREFR* object, UInt32 handle, bool isMeleeW) {
-		if (gShowWeapons) {
-			NiNode* bone = nullptr;
-			if (weapName == ".44") {
-				weapName = "44cal";
-			}
-			gInPowerArmor ? bone = FindNode(PAWeaponBones[handle].c_str()) : bone = FindNode(WeaponBones[handle].c_str());
-			if (bone != nullptr) {
-				UInt32 formID = baseForm->formID;
-				BSFixedString holstername = HolsterNames[handle].c_str();
-				MyWeapon* weap1 = new MyWeapon(bone, holstername, isMeleeW, weapName, formID);
-				VisualArt[handle] = weapName;
-				WeaponRegisteredObjects[handle] = weap1;
-				displayWeapon(object, handle);
-			}
+	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, NiNode* source, UInt32 handle, bool isMeleeW, const NiTransform* startWorld) {
+		if (!gShowWeapons || !baseForm || !source) {
+			return;
 		}
+		if (weapName == ".44") {
+			weapName = "44cal";
+		}
+		NiNode* bone = FindNode(gInPowerArmor ? PAWeaponBones[handle].c_str() : WeaponBones[handle].c_str());
+		if (!bone) {
+			return;
+		}
+		// One display per slot: a newer one replaces the old.
+		nDestoryWeapon(handle, false, false);
+		MyWeapon* weapon = new MyWeapon(bone, HolsterNames[handle].c_str(), isMeleeW, weapName, baseForm->formID);
+		VisualArt[handle] = weapName;
+		WeaponRegisteredObjects[handle] = weapon;
+		displayWeapon(source, handle, startWorld);
 	}
 
 	// Papyrus}
@@ -3094,9 +3627,7 @@ public:
 		if (it == Holsters::HolsterRegisteredObjects.end() || !it->second || !it->second->bone) {
 			return false;
 		}
-		// Calculate world position: bone world pos + rotated offset
-		NiPoint3 offset = it->second->bone->m_worldTransform.rot * it->second->offset;
-		NiPoint3 worldPos = it->second->bone->m_worldTransform.pos + offset;
+		const NiPoint3 worldPos = Holsters::HolsterCenterWorld(*it->second);
 		outX = worldPos.x;
 		outY = worldPos.y;
 		outZ = worldPos.z;
@@ -3168,11 +3699,15 @@ public:
 		TESForm* form = reinterpret_cast<TESForm*>(baseForm);
 		TESObjectREFR* refr = reinterpret_cast<TESObjectREFR*>(weaponRef);
 
-		// Call new addHolster function
-		std::string nameStr(weaponName);
-		void addHolster(int handle, std::string weapName, TESForm * baseForm, TESObjectREFR * object, bool isMeleeW);
-		
-
+		if (holsteredWeapNames[holsterIndex] != "Empty") {
+			_MESSAGE("AddHolster: Holster %d is occupied", holsterIndex);
+			return false;
+		}
+		Holsters::addHolster(static_cast<int>(holsterIndex), weaponName, form, refr, isMelee);
+		if (holsteredWeapNames[holsterIndex] != weaponName) {
+			_MESSAGE("AddHolster: Holster %d did not accept '%s'", holsterIndex, weaponName);
+			return false;
+		}
 		_MESSAGE("AddHolster: Added '%s' to holster %d (melee=%d)", weaponName, holsterIndex, isMelee);
 		return true;
 	}

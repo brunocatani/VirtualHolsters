@@ -23,9 +23,6 @@ namespace Holsters {
 	extern RelocAddr <_ActorEquipItem> ActorEquipItem;
 	bool getLeftHandedMode();
 	bool exists_file(std::string);
-	void CheckMenusTimer();
-	void FistsTimer(int time);
-	void infoTimer(int time);
 	void checkingloadingcompleted();
 	NiNode* getChildNode(const char* nodeName, NiNode* nde);
 	NiNode* get1stChildNode(const char* nodeName, NiNode* nde);

@@ -168,48 +168,6 @@ namespace Holsters::Interaction
 		Slot pullOutSlot_{ kNoSlot };
 	};
 
-	struct HandAction
-	{
-		GestureActionKind kind{ GestureActionKind::kNone };
-		bool isLeft{};
-		Slot slot{};
-
-		[[nodiscard]] bool HasAction() const noexcept
-		{
-			return kind != GestureActionKind::kNone &&
-				slot != kNoSlot;
-		}
-	};
-
-	[[nodiscard]] inline HandAction SelectAction(
-		const GestureDecision& left,
-		const GestureDecision& right,
-		const bool preferRight) noexcept
-	{
-		const auto makeAction = [](
-								 const GestureDecision& decision,
-								 const bool isLeft) noexcept {
-			return HandAction{
-				decision.Kind(),
-				isLeft,
-				decision.ActionSlot()
-			};
-		};
-
-		if (left.HasAction() && right.HasAction()) {
-			return preferRight ?
-				makeAction(right, false) :
-				makeAction(left, true);
-		}
-		if (left.HasAction()) {
-			return makeAction(left, true);
-		}
-		if (right.HasAction()) {
-			return makeAction(right, false);
-		}
-		return {};
-	}
-
 	struct ZoneSample
 	{
 		Slot slot{};

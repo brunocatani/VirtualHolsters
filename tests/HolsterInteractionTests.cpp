@@ -215,7 +215,7 @@ namespace
 			"a fresh cycle after recovery must work");
 	}
 
-	void TestIndependentHandsAndSimultaneousPriority()
+	void TestIndependentHands()
 	{
 		using namespace Holsters::Interaction;
 
@@ -238,25 +238,6 @@ namespace
 		Check(
 			rightRelease.releasedSlot == 7,
 			"right-hand state must release independently");
-
-		const auto preferRight =
-			SelectAction({ 3, kNoSlot }, { kNoSlot, 4 }, true);
-		Check(
-			preferRight.HasAction() &&
-				preferRight.kind == GestureActionKind::kPullOut &&
-				!preferRight.isLeft &&
-				preferRight.slot == 4,
-			"simultaneous actions must prefer configured right hand");
-
-		const auto preferLeft =
-			SelectAction({ 3, kNoSlot }, { kNoSlot, 4 }, false);
-		Check(
-			preferLeft.HasAction() &&
-				preferLeft.kind ==
-					GestureActionKind::kReleaseInZone &&
-				preferLeft.isLeft &&
-				preferLeft.slot == 3,
-			"simultaneous actions must prefer configured left hand");
 	}
 
 	void TestStableZoneSelection()
@@ -341,7 +322,7 @@ int main()
 	TestPullOutGesture();
 	TestPullOutRequiresEligiblePressInside();
 	TestInterruptionAndTrackingLossRearm();
-	TestIndependentHandsAndSimultaneousPriority();
+	TestIndependentHands();
 	TestStableZoneSelection();
 	TestHolsterSlotPolicy();
 
