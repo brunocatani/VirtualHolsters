@@ -28,6 +28,7 @@ namespace Holsters::Rock
 		{
 			bool requested{};
 			bool reserveGrab{};
+			bool exclusive{};
 			std::uint64_t buttonMask{};
 			bool shoulder{};
 		};
@@ -175,6 +176,10 @@ namespace Holsters::Rock
 					static_cast<std::uint32_t>(Flag::SuppressGrabRelease) |
 					static_cast<std::uint32_t>(Flag::SuppressHeldWeaponTriggerEquip) |
 					static_cast<std::uint32_t>(Flag::SuppressGameplayCandidates);
+			}
+			if (reservation.exclusive) {
+				flags |= static_cast<std::uint32_t>(Flag::SuppressConfigModeChord) |
+					static_cast<std::uint32_t>(Flag::SuppressOpenVrGameInput);
 			}
 			constexpr std::uint64_t kChordButtons =
 				(1ull << 1) | (1ull << 2) | (1ull << 7) | (1ull << 32) | (1ull << 33);
@@ -442,6 +447,49 @@ namespace Holsters::Rock
 		if (command == s_state.equipCommand) {
 			s_state.equipCommand = 0;
 		}
+	}
+
+	bool ReadRawButton(const bool isLeft, const std::uint32_t buttonId, bool& held) noexcept
+	{
+		held = false;
+		if (!s_state.client.owner() || !s_state.input) {
+			return false;
+		}
+		api::input::RawWandButtonState state{};
+		if (s_state.input->getRawWandButtonState(
+				s_state.client.owner(), ToHand(isLeft), buttonId, &state) != api::Status::Ok ||
+			!state.available) {
+			return false;
+		}
+		held = state.held != 0;
+		return true;
+	}
+
+	bool ReadRawStick(const bool isLeft, float& x, float& y) noexcept
+	{
+		x = 0.0F;
+		y = 0.0F;
+		return s_state.client.owner() && s_state.input &&
+			s_state.input->getRawWandThumbstick(s_state.client.owner(), ToHand(isLeft), &x, &y) == api::Status::Ok;
+	}
+
+	void ReserveHandExclusive(const bool isLeft) noexcept
+	{
+		auto& reservation = s_state.pending[HandIndex(isLeft)];
+		reservation.requested = true;
+		reservation.exclusive = true;
+	}
+
+	std::uint64_t OverlayRawButtons(const bool isLeft, std::uint64_t buttons) noexcept
+	{
+		for (std::uint32_t id = 0; id < 64; ++id) {
+			const std::uint64_t bit = 1ull << id;
+			bool held = false;
+			if ((kReservableButtons & bit) != 0 && ReadRawButton(isLeft, id, held)) {
+				buttons = held ? (buttons | bit) : (buttons & ~bit);
+			}
+		}
+		return buttons;
 	}
 
 	void ReserveHand(

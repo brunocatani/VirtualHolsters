@@ -81,6 +81,27 @@ namespace Holsters::Rock
 	[[nodiscard]] EquipProgress PollEquip(std::uint64_t command) noexcept;
 	void CancelEquip(std::uint64_t command) noexcept;
 
+	// Physical state of one OpenVR button on a wand. ROCK filters the game's
+	// controller reads, including a button this mod reserves, so with ROCK
+	// bound the holster button is read here. False when ROCK has no sample.
+	bool ReadRawButton(bool isLeft, std::uint32_t buttonId, bool& held) noexcept;
+
+	// The OpenVR buttons this mod can reserve in ROCK (menu, grip, A/X,
+	// stick/pad press, trigger).
+	inline constexpr std::uint64_t kReservableButtons =
+		(1ull << 1) | (1ull << 2) | (1ull << 7) | (1ull << 32) | (1ull << 33);
+
+	// buttons with every reservable button replaced by its physical state
+	// from ROCK, where ROCK has a sample for it.
+	std::uint64_t OverlayRawButtons(bool isLeft, std::uint64_t buttons) noexcept;
+
+	// Physical thumbstick of a wand; false when ROCK has no sample.
+	bool ReadRawStick(bool isLeft, float& x, float& y) noexcept;
+
+	// Reserve one hand completely for this frame: ROCK neither grabs nor
+	// acts on its buttons, and the game does not see its input (config mode).
+	void ReserveHandExclusive(bool isLeft) noexcept;
+
 	// Reserve one hand for this frame. reserveGrab keeps ROCK from grabbing
 	// or releasing with that hand (holster button on the grab button);
 	// holsterButtonMask reserves that OpenVR button on the hand's wand while

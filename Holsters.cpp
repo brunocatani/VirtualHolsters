@@ -1345,33 +1345,41 @@ namespace Holsters {
 			const bool rightControllerAvailable =
 				VRHook::g_vrHook->isControllerStateAvailable(
 					VRHook::VRSystem::TrackerType::Right);
-			const uint64_t leftButtons =
-				leftControllerAvailable ?
-					leftController.ulButtonPressed :
-					0;
-			const uint64_t rightButtons =
-				rightControllerAvailable ?
-					rightController.ulButtonPressed :
-					0;
+			// Buttons this mod reserves in ROCK disappear from the game's
+			// controller read, so with ROCK bound they are read raw from ROCK.
+			const uint64_t leftButtons = Rock::IsBound() ?
+				Rock::OverlayRawButtons(true, leftControllerAvailable ? leftController.ulButtonPressed : 0) :
+				(leftControllerAvailable ? leftController.ulButtonPressed : 0);
+			const uint64_t rightButtons = Rock::IsBound() ?
+				Rock::OverlayRawButtons(false, rightControllerAvailable ? rightController.ulButtonPressed : 0) :
+				(rightControllerAvailable ? rightController.ulButtonPressed : 0);
 			const uint64_t dominantHand =
 				gIsRightHanded ? rightButtons : leftButtons;
 			const uint64_t offHand =
 				gIsRightHanded ? leftButtons : rightButtons;
+			vr::VRControllerAxis_t leftStick = leftController.rAxis[0];
+			vr::VRControllerAxis_t rightStick = rightController.rAxis[0];
+			if (Rock::IsBound()) {
+				float x = 0.0F;
+				float y = 0.0F;
+				if (Rock::ReadRawStick(true, x, y)) {
+					leftStick.x = x;
+					leftStick.y = y;
+				}
+				if (Rock::ReadRawStick(false, x, y)) {
+					rightStick.x = x;
+					rightStick.y = y;
+				}
+			}
 			const vr::VRControllerAxis_t doinantHandStick =
-				gIsRightHanded ?
-					rightController.rAxis[0] :
-					leftController.rAxis[0];
+				gIsRightHanded ? rightStick : leftStick;
 			const vr::VRControllerAxis_t offHandStick =
-				gIsRightHanded ?
-					leftController.rAxis[0] :
-					rightController.rAxis[0];
+				gIsRightHanded ? leftStick : rightStick;
 
 			const auto holsterButtonMask = vr::ButtonMaskFromId(
 				static_cast<vr::EVRButtonId>(c_holsterButtonID));
-			const bool leftHolsterHeld =
-				(leftButtons & holsterButtonMask) != 0;
-			const bool rightHolsterHeld =
-				(rightButtons & holsterButtonMask) != 0;
+			const bool leftHolsterHeld = (leftButtons & holsterButtonMask) != 0;
+			const bool rightHolsterHeld = (rightButtons & holsterButtonMask) != 0;
 			const bool gameplayEnabled =
 				!_isConfigModeActive &&
 				!isGameStopped() &&
@@ -1436,6 +1444,26 @@ namespace Holsters {
 					s_rightHand.zone != Interaction::kNoSlot &&
 						(releasePossible(s_rightHand, false, rightFacts) || pullOutPossible(s_rightHand, false, rightFacts)));
 			}
+			// Config mode drives both hands' buttons and sticks (grip shift and
+			// cycle, A rotate, stick press, menu, trigger exit, sticks move the
+			// holster): ROCK must not grab or act on them and the game must not
+			// jump or move, also until they are released after exit. Entering
+			// it (stick press with the dominant hand in a zone, weapon away)
+			// must not reach ROCK or the game either.
+			static bool s_configReleasePending = false;
+			if (_isConfigModeActive) {
+				s_configReleasePending = true;
+			} else if (s_configReleasePending && ((leftButtons | rightButtons) & Rock::kReservableButtons) == 0) {
+				s_configReleasePending = false;
+			}
+			if (_isConfigModeActive || s_configReleasePending) {
+				Rock::ReserveHandExclusive(true);
+				Rock::ReserveHandExclusive(false);
+			} else if (getHandHolster(!gIsRightHanded) != Interaction::kNoSlot &&
+				!(*g_player)->actorState.IsWeaponDrawn()) {
+				Rock::ReserveHand(!gIsRightHanded, false,
+					vr::ButtonMaskFromId(static_cast<vr::EVRButtonId>(c_configButtonID)), false);
+			}
 
 			// Gameplay Controls 
 			if (!_isConfigModeActive) {
@@ -1487,6 +1515,13 @@ namespace Holsters {
 						acted = BeginDraw(isLeft, slot, facts, true);
 						break;
 					case HolsterAction::kNone:
+						if (slot != Interaction::kNoSlot) {
+							_MESSAGE("Holster %u %s by the %s hand did nothing: occupied=%d known=%d holds=%d canReceive=%d handBusy=%d slotBusy=%d",
+								slot, decision.Kind() == Interaction::GestureActionKind::kPullOut ? "pull-out" : "release",
+								isLeft ? "left" : "right", holsteredWeapNames[slot] != "Empty" ? 1 : 0,
+								facts.known, facts.holds, facts.canReceive,
+								TransferFor(isLeft).active ? 1 : 0, SlotHasTransfer(slot) ? 1 : 0);
+						}
 						break;
 					}
 					if (acted) {
@@ -1817,7 +1852,7 @@ namespace Holsters {
 			_MESSAGE("ERROR: cannot read VirtualHolsters.ini");
 			return false;
 		}
-		c_holsterButtonID = (int)ini.GetLongValue("Button Config", "HolsterButtonID", vr::EVRButtonId::k_EButton_A);
+		c_holsterButtonID = (int)ini.GetLongValue("Button Config", "HolsterButtonID", vr::EVRButtonId::k_EButton_Grip);
 		c_configButtonID = (int)ini.GetLongValue("Button Config", "ConfigModeButtonID", vr::EVRButtonId::k_EButton_SteamVR_Touchpad);
 		c_configModeShiftButton = (int)ini.GetLongValue("Button Config", "ConfigModeShiftButtonID", vr::EVRButtonId::k_EButton_Grip);
 		c_configModeRotateButton = (int)ini.GetLongValue("Button Config", "ConfigRotateButtonID", vr::EVRButtonId::k_EButton_A);
