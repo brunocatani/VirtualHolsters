@@ -74,6 +74,9 @@ namespace Holsters {
 		float blendDuration = 0.0F;
 		NiTransform blendFrom{};
 		NiTransform blendTo{};
+		// A firearm drawn into a hand: blendTo follows ROCK's firing aim
+		// until ROCK reveals the real weapon.
+		bool followsAim = false;
 	};
 
 	class MyHolster {
@@ -193,7 +196,7 @@ namespace Holsters {
 	// weapon is on screen now; the clone eases from there into its pose.
 	void displayWeapon(NiNode* source, UInt32 handle, const NiTransform* startWorld);
 	void nDestoryWeapon(UInt32 handle, bool destroyArt, bool playsound);
-	void playSwordSFX(int handle);
+	void playSwordSFX(const MyWeapon& weapon);
 	void moveWeapon(int);
 	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, NiNode* source, UInt32 handle, bool isMeleeW, const NiTransform* startWorld);
 	void RegisterForHolsterEvents(StaticFunctionTag* base, VMObject* thisObject);

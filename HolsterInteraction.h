@@ -26,7 +26,7 @@ namespace Holsters::Interaction
 	{
 		kNone,
 		kReleaseInZone,
-		kPullOut
+		kPressDraw
 	};
 
 	struct GestureInput
@@ -35,33 +35,34 @@ namespace Holsters::Interaction
 		bool gameplayEnabled{};
 		bool buttonHeld{};
 		Slot candidateSlot{};
-		bool pullOutEligible{};
+		// The candidate slot can be drawn from by this hand right now.
+		bool drawEligible{};
 	};
 
 	struct GestureDecision
 	{
 		Slot releasedSlot{};
-		Slot pulledSlot{};
+		Slot drawSlot{};
 
 		[[nodiscard]] bool HasRelease() const noexcept
 		{
 			return releasedSlot != kNoSlot;
 		}
 
-		[[nodiscard]] bool HasPullOut() const noexcept
+		[[nodiscard]] bool HasDraw() const noexcept
 		{
-			return pulledSlot != kNoSlot;
+			return drawSlot != kNoSlot;
 		}
 
 		[[nodiscard]] bool HasAction() const noexcept
 		{
-			return HasRelease() || HasPullOut();
+			return HasRelease() || HasDraw();
 		}
 
 		[[nodiscard]] GestureActionKind Kind() const noexcept
 		{
-			if (HasPullOut()) {
-				return GestureActionKind::kPullOut;
+			if (HasDraw()) {
+				return GestureActionKind::kPressDraw;
 			}
 			return HasRelease() ?
 				GestureActionKind::kReleaseInZone :
@@ -70,15 +71,17 @@ namespace Holsters::Interaction
 
 		[[nodiscard]] Slot ActionSlot() const noexcept
 		{
-			return HasPullOut() ? pulledSlot : releasedSlot;
+			return HasDraw() ? drawSlot : releasedSlot;
 		}
 	};
 
 	// OpenVR can attach while a button is already down, so startup and every
 	// interruption require observing an unpressed sample before another action.
-	// Release uses the release-frame zone. Pull-out is stricter: it only arms
-	// when the press starts inside an eligible occupied slot, then fires once
-	// when that same slot is exited while the button remains held.
+	// A press inside a slot this hand can draw from draws at once, on the press
+	// frame or as soon as that slot becomes drawable while the press is held
+	// inside it (a one-frame ineligible sample must not defer it). Entering a
+	// slot while already held never draws. Every other press acts on release,
+	// in the release-frame zone (holster, swap).
 	class HolsterGesture
 	{
 	public:
@@ -101,31 +104,22 @@ namespace Holsters::Interaction
 				if (input.buttonHeld) {
 					phase_ = GesturePhase::kHeld;
 					candidateSlot_ = input.candidateSlot;
-					pullOutSlot_ = input.pullOutEligible ?
-						input.candidateSlot :
-						kNoSlot;
+					pressSlot_ = input.candidateSlot;
+					return DrawIfEligible(input);
 				}
 				return {};
 
 			case GesturePhase::kHeld:
 				if (input.buttonHeld) {
 					candidateSlot_ = input.candidateSlot;
-					if (pullOutSlot_ != kNoSlot &&
-						input.candidateSlot != pullOutSlot_) {
-						const Slot pulledSlot = pullOutSlot_;
-						phase_ = GesturePhase::kConsumed;
-						candidateSlot_ = kNoSlot;
-						pullOutSlot_ = kNoSlot;
-						return { kNoSlot, pulledSlot };
-					}
-					return {};
+					return DrawIfEligible(input);
 				}
 
 				// The release-frame zone is authoritative. This makes leaving
 				// before release a cancellation and entering while held valid.
 				phase_ = GesturePhase::kIdle;
 				candidateSlot_ = kNoSlot;
-				pullOutSlot_ = kNoSlot;
+				pressSlot_ = kNoSlot;
 				return { input.candidateSlot, kNoSlot };
 
 			case GesturePhase::kConsumed:
@@ -143,7 +137,7 @@ namespace Holsters::Interaction
 		{
 			phase_ = GesturePhase::kNeedsRelease;
 			candidateSlot_ = kNoSlot;
-			pullOutSlot_ = kNoSlot;
+			pressSlot_ = kNoSlot;
 		}
 
 		[[nodiscard]] GesturePhase Phase() const noexcept
@@ -163,9 +157,21 @@ namespace Holsters::Interaction
 		}
 
 	private:
+		[[nodiscard]] GestureDecision DrawIfEligible(const GestureInput& input) noexcept
+		{
+			if (pressSlot_ == kNoSlot || !input.drawEligible || input.candidateSlot != pressSlot_) {
+				return {};
+			}
+			const Slot slot = pressSlot_;
+			phase_ = GesturePhase::kConsumed;
+			candidateSlot_ = kNoSlot;
+			pressSlot_ = kNoSlot;
+			return { kNoSlot, slot };
+		}
+
 		GesturePhase phase_{ GesturePhase::kNeedsRelease };
 		Slot candidateSlot_{ kNoSlot };
-		Slot pullOutSlot_{ kNoSlot };
+		Slot pressSlot_{ kNoSlot };
 	};
 
 	struct ZoneSample

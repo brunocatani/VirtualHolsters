@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Optional ROCK 1.0 (provider API major 2) binding. VirtualHolsters works
@@ -70,15 +71,43 @@ namespace Holsters::Rock
 	[[nodiscard]] HandWeapon GetHandWeapon(bool isLeft) noexcept;
 	[[nodiscard]] bool GetWeaponWorld(std::uint32_t slot, WeaponWorld& out) noexcept;
 
+	// ROCK shows the weapon of that slot in the hand.
+	[[nodiscard]] bool WeaponShown(std::uint32_t slot, std::uint32_t formId) noexcept;
+
+	// The hand holds, pulls or catches an object, or is latched to a
+	// surface, so ROCK would refuse to equip into it.
+	[[nodiscard]] bool HandBusyWithObject(bool isLeft) noexcept;
+
+	// An inventory weapon by base form and inventory stack index.
+	struct WarmWeapon
+	{
+		std::uint32_t formId{};
+		std::uint32_t stackIndex{};
+	};
+
+	// The holstered set must be sent to ROCK: it changed, was never sent
+	// since binding, or ROCK dropped it (a lifecycle generation changed).
+	// False while a failed send waits for its retry.
+	[[nodiscard]] bool WarmSendDue(bool setChanged) noexcept;
+
+	// ROCK keeps these inventory weapons' animations loaded so drawing one
+	// does not wait on the engine's first-use load. False: retried later.
+	bool SetWarmWeapons(const WarmWeapon* weapons, std::size_t count) noexcept;
+
+	// Where ROCK seats a firearm held by that hand this frame (scale 1).
+	[[nodiscard]] bool GetFiringAimWorld(bool isLeft, WeaponWorld& out) noexcept;
+
 	[[nodiscard]] Result UnequipWeapon(std::uint32_t slot, std::uint32_t formId) noexcept;
-	// Queues an equip of inventory stack `stackIndex` of `formId` into the
-	// hand; ROCK returns the hand's current weapon to the inventory.
+	// Queues a draw of inventory stack `stackIndex` of `formId` into the
+	// hand (ROCK requestInventoryDraw: the stand-in is at the firing aim);
+	// ROCK returns the hand's current weapon to the inventory.
 	[[nodiscard]] Result RequestEquip(
 		bool isLeft,
 		std::uint32_t formId,
 		std::uint32_t stackIndex,
 		std::uint64_t& outCommand) noexcept;
-	[[nodiscard]] EquipProgress PollEquip(std::uint64_t command) noexcept;
+	// On success, outWeaponSlot names the slot ROCK equipped the weapon into.
+	[[nodiscard]] EquipProgress PollEquip(std::uint64_t command, std::uint32_t* outWeaponSlot = nullptr) noexcept;
 	void CancelEquip(std::uint64_t command) noexcept;
 
 	// Physical state of one OpenVR button on a wand. ROCK filters the game's

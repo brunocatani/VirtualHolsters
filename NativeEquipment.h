@@ -23,4 +23,9 @@ namespace Holsters::NativeEquipment
 	// index 1 elsewhere in the first-person skeleton. Null when it is absent,
 	// hidden or ambiguous. Borrowed engine NiNode for this frame only.
 	[[nodiscard]] void* FindEquippedModel(std::uint32_t index, std::uint32_t formId) noexcept;
+
+	// The controller (wand) node of a hand, the frame ROCK places a held
+	// weapon in. The hand bone is not: it moves between an open hand and a
+	// grip. Borrowed engine NiNode; null when unavailable.
+	[[nodiscard]] void* WandNode(bool isLeft) noexcept;
 }

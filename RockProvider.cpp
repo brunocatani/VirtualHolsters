@@ -3,6 +3,7 @@
 #include "LegacyBridge.h"
 
 #include <ROCK/Client.h>
+#include <ROCK/Grab.h>
 #include <ROCK/Hands.h>
 #include <ROCK/Input.h>
 #include <ROCK/Storage.h>
@@ -10,6 +11,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 
@@ -37,6 +39,7 @@ namespace Holsters::Rock
 		{
 			api::Client client{};
 			const api::hands::Api* hands{};
+			const api::grab::Api* grab{};
 			const api::weapon::Api* weapon{};
 			const api::input::Api* input{};
 			const api::storage::Api* storage{};
@@ -49,6 +52,11 @@ namespace Holsters::Rock
 			std::array<bool, 2> suppressed{};
 			std::uint32_t routedMask{};
 			std::uint64_t equipCommand{};
+			// The holstered set ROCK keeps loaded: sent since binding, the
+			// generations it was sent for, frames until a failed send retries.
+			bool warmSent{};
+			std::array<std::uint32_t, 3> warmGenerations{};
+			std::uint32_t warmRetryFrames{};
 		};
 
 		State s_state{};
@@ -83,6 +91,7 @@ namespace Holsters::Rock
 				(void)s_state.client.close();
 			}
 			s_state.hands = nullptr;
+			s_state.grab = nullptr;
 			s_state.weapon = nullptr;
 			s_state.input = nullptr;
 			s_state.storage = nullptr;
@@ -91,11 +100,13 @@ namespace Holsters::Rock
 			s_state.suppressed = {};
 			s_state.routedMask = 0;
 			s_state.equipCommand = 0;
+			s_state.warmSent = false;
+			s_state.warmRetryFrames = 0;
 		}
 
 		[[nodiscard]] bool Bind() noexcept
 		{
-			if (s_state.client.owner() && s_state.hands && s_state.weapon &&
+			if (s_state.client.owner() && s_state.hands && s_state.grab && s_state.weapon &&
 				s_state.input && s_state.storage) {
 				return true;
 			}
@@ -137,6 +148,10 @@ namespace Holsters::Rock
 			}
 			if (status == Status::Ok) {
 				status = s_state.client.acquire(
+					bits(grab::Permission::Read), s_state.grab);
+			}
+			if (status == Status::Ok) {
+				status = s_state.client.acquire(
 					bits(weapon::Permission::Read, weapon::Permission::Write),
 					s_state.weapon);
 			}
@@ -154,13 +169,13 @@ namespace Holsters::Rock
 				s_state.retryCountdown = kBindRetryFrames;
 				if (!s_state.bindFailureReported) {
 					s_state.bindFailureReported = true;
-					LogStatus("binding (Core, Hands, Weapon, Input, Storage 2.0)", status);
+					LogStatus("binding (Core, Hands, Grab, Weapon, Input, Storage 2.0)", status);
 				}
 				return false;
 			}
 			s_state.bindFailureReported = false;
 			LegacyBridge::LogInfo(
-				"VirtualHolsters: bound ROCK Core, Hands, Weapon, Input and "
+				"VirtualHolsters: bound ROCK Core, Hands, Grab, Weapon, Input and "
 				"Storage 2.0; ROCK owns weapon hands.");
 			return true;
 		}
@@ -181,11 +196,9 @@ namespace Holsters::Rock
 				flags |= static_cast<std::uint32_t>(Flag::SuppressConfigModeChord) |
 					static_cast<std::uint32_t>(Flag::SuppressOpenVrGameInput);
 			}
-			constexpr std::uint64_t kChordButtons =
-				(1ull << 1) | (1ull << 2) | (1ull << 7) | (1ull << 32) | (1ull << 33);
 			api::input::HandInputSuppressionRequest request{};
 			if (reservation.buttonMask &&
-				(reservation.buttonMask & ~kChordButtons) == 0) {
+				(reservation.buttonMask & ~kReservableButtons) == 0) {
 				flags |= static_cast<std::uint32_t>(Flag::ReserveButtonChord);
 				request.chordButtons[isLeft ? 0 : 1] = reservation.buttonMask;
 			}
@@ -339,6 +352,130 @@ namespace Holsters::Rock
 		return true;
 	}
 
+	bool WeaponShown(const std::uint32_t slot, const std::uint32_t formId) noexcept
+	{
+		if (!s_state.active || slot >= api::kMaxWeaponSlots || !formId) {
+			return false;
+		}
+		api::weapon::WeaponState state{};
+		if (s_state.weapon->getWeaponState(s_state.client.owner(), slot, &state) != api::Status::Ok ||
+			state.weaponFormId != formId) {
+			return false;
+		}
+		// Slot 0: ROCK's reveal of the native model. Slot 1: ROCK presents
+		// its model in the hand without a draw wait.
+		using Flag = api::weapon::WeaponStateFlag;
+		const auto shown = slot == 0 ? Flag::NativeRenderable : Flag::WeaponPresent;
+		return (state.flags & static_cast<std::uint32_t>(shown)) != 0;
+	}
+
+	namespace
+	{
+		constexpr std::uint32_t kWarmRetryFrames = 90;
+
+		[[nodiscard]] bool ReadGenerations(std::array<std::uint32_t, 3>& out) noexcept
+		{
+			api::Sample sample{};
+			if (s_state.weapon->getSample(s_state.client.owner(), &sample) != api::Status::Ok) {
+				return false;
+			}
+			out = { sample.worldGeneration, sample.skeletonGeneration, sample.providerGeneration };
+			return true;
+		}
+	}
+
+	bool WarmSendDue(const bool setChanged) noexcept
+	{
+		if (!s_state.active) {
+			return false;
+		}
+		if (s_state.warmRetryFrames > 0) {
+			--s_state.warmRetryFrames;
+			return false;
+		}
+		if (setChanged || !s_state.warmSent) {
+			return true;
+		}
+		std::array<std::uint32_t, 3> generations{};
+		return ReadGenerations(generations) && generations != s_state.warmGenerations;
+	}
+
+	bool SetWarmWeapons(const WarmWeapon* weapons, std::size_t count) noexcept
+	{
+		if (!s_state.active) {
+			return false;
+		}
+		const auto owner = s_state.client.owner();
+		std::array<api::weapon::InventoryWeapon, api::weapon::kMaxWarmInventoryWeapons> items{};
+		count = (std::min)(count, items.size());
+		std::array<std::uint32_t, 3> generations{};
+		auto status = ReadGenerations(generations) ? api::Status::Ok : api::Status::NotReady;
+		for (std::size_t i = 0; i < count && status == api::Status::Ok; ++i) {
+			status = s_state.weapon->captureInventoryWeapon(owner, weapons[i].formId, weapons[i].stackIndex, &items[i]);
+		}
+		if (status == api::Status::Ok) {
+			status = s_state.weapon->setWarmInventoryWeapons(owner, items.data(), static_cast<std::uint32_t>(count));
+		}
+		if (status != api::Status::Ok) {
+			if (status != api::Status::NotReady) {
+				LogStatus("keeping holstered weapons loaded", status);
+			}
+			s_state.warmSent = false;
+			s_state.warmRetryFrames = kWarmRetryFrames;
+			return false;
+		}
+		s_state.warmSent = true;
+		s_state.warmGenerations = generations;
+		char message[96]{};
+		if (std::snprintf(message, sizeof(message),
+				"VirtualHolsters: ROCK keeps %zu holstered weapon(s) ready to draw.", count) > 0) {
+			LegacyBridge::LogInfo(message);
+		}
+		return true;
+	}
+
+	bool HandBusyWithObject(const bool isLeft) noexcept
+	{
+		if (!s_state.active) {
+			return false;
+		}
+		api::grab::HandInteractionState state{};
+		if (s_state.grab->getHandInteractionState(s_state.client.owner(), ToHand(isLeft), &state) != api::Status::Ok) {
+			return false;
+		}
+		using Flag = api::grab::HandInteractionFlag;
+		using Phase = api::grab::HandInteractionPhase;
+		const auto has = [&](const Flag flag) { return (state.flags & static_cast<std::uint32_t>(flag)) != 0; };
+		if (!has(Flag::Valid)) {
+			return false;
+		}
+		// ROCK's own equip refuses such a hand (HandBusy): it holds, pulls or
+		// catches something, or is latched to a surface. Its own weapon grip
+		// does not count.
+		return has(Flag::LooseObject) || has(Flag::LooseWeapon) || has(Flag::TouchGrab) ||
+			has(Flag::FixedSurfaceLatch) || has(Flag::GlobalSurfaceLatch) ||
+			state.phase == Phase::Pulling || state.phase == Phase::Catching;
+	}
+
+	bool GetFiringAimWorld(const bool isLeft, WeaponWorld& out) noexcept
+	{
+		if (!s_state.active) {
+			return false;
+		}
+		api::Transform world{};
+		if (s_state.weapon->getFiringAimWorld(s_state.client.owner(), ToHand(isLeft), &world) != api::Status::Ok) {
+			return false;
+		}
+		for (std::size_t i = 0; i < 9; ++i) {
+			out.rotate[i] = world.rotate[i];
+		}
+		for (std::size_t i = 0; i < 3; ++i) {
+			out.translate[i] = world.translate[i];
+		}
+		out.scale = world.scale;
+		return true;
+	}
+
 	Result UnequipWeapon(const std::uint32_t slot, const std::uint32_t formId) noexcept
 	{
 		if (!s_state.active) {
@@ -377,7 +514,9 @@ namespace Holsters::Rock
 		auto status = s_state.weapon->captureInventoryWeapon(
 			owner, formId, stackIndex, &request.item);
 		if (status == api::Status::Ok) {
-			status = s_state.weapon->requestInventoryEquip(owner, &request, &outCommand);
+			// A draw: the stand-in shows the weapon at the hand's firing aim
+			// until the reveal, so ROCK eases weapon and hand on from there.
+			status = s_state.weapon->requestInventoryDraw(owner, &request, &outCommand);
 		}
 		switch (status) {
 		case api::Status::RequestQueued:
@@ -393,7 +532,7 @@ namespace Holsters::Rock
 		}
 	}
 
-	EquipProgress PollEquip(const std::uint64_t command) noexcept
+	EquipProgress PollEquip(const std::uint64_t command, std::uint32_t* const outWeaponSlot) noexcept
 	{
 		if (!command || !s_state.weapon || !s_state.client.owner()) {
 			return EquipProgress::kFailed;
@@ -411,6 +550,9 @@ namespace Holsters::Rock
 		if (result.state == State::Succeeded) {
 			if (command == s_state.equipCommand) {
 				s_state.equipCommand = 0;
+			}
+			if (outWeaponSlot) {
+				*outWeaponSlot = result.weaponSlot;
 			}
 			return EquipProgress::kSucceeded;
 		}

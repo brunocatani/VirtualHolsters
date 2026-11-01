@@ -3,6 +3,7 @@
 #include <F4SE/F4SE.h>
 #include <RE/Bethesda/Actor.h>
 #include <RE/Bethesda/PlayerCharacter.h>
+#include <RE/Bethesda/Settings.h>
 #include <RE/NetImmerse/NiNode.h>
 
 #include <cstdio>
@@ -106,5 +107,22 @@ namespace Holsters::NativeEquipment
 			return search.insideAmbiguous ? nullptr : search.inside;
 		}
 		return search.outsideAmbiguous ? nullptr : search.outside;
+	}
+
+	void* WandNode(const bool isLeft) noexcept
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player) {
+			return nullptr;
+		}
+		// The primary wand is the game's main hand; left-handed mode swaps it.
+		// Settings live for the process; look the name up once, not per frame.
+		static const RE::Setting* setting = RE::GetINISetting("bLeftHandedMode:VR");
+		const bool leftHanded = setting && setting->GetBinary();
+		// PlayerCharacter VR node table (player + 0x6E0): primaryWandNode at
+		// +0x6F0, SecondaryWandNode at +0x768, as ROCK and FRIK read them.
+		const std::uintptr_t offset = (isLeft == leftHanded) ? 0x6F0 : 0x768;
+		auto* node = *reinterpret_cast<RE::NiNode**>(reinterpret_cast<std::uintptr_t>(player) + offset);
+		return node && node->parent ? node : nullptr;
 	}
 }
