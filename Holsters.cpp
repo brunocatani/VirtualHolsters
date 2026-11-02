@@ -226,7 +226,45 @@ namespace Holsters {
 			// by one hand, or a grabbed object, keeps drawing on let-go.
 			bool pressTwoHanded{};
 			bool twoHandedLastFrame{};
+			// Input trace: the nearest enabled holster this frame and the
+			// button state the trace last reported.
+			UInt32 nearestSlot{ Interaction::kNoSlot };
+			float nearestDistance{};
+			float nearestRadius{};
+			std::size_t zoneSamples{};
+			bool heldLastFrame{};
 		};
+
+		// Input gates the trace last reported (bit set, see TraceInputGates).
+		std::uint32_t s_tracedInputGates{ 0xFFFFFFFFu };
+
+		[[nodiscard]] const char* GesturePhaseName(const Interaction::GesturePhase phase) noexcept
+		{
+			switch (phase) {
+			case Interaction::GesturePhase::kNeedsRelease:
+				return "needs-release";
+			case Interaction::GesturePhase::kIdle:
+				return "idle";
+			case Interaction::GesturePhase::kHeld:
+				return "held";
+			case Interaction::GesturePhase::kConsumed:
+				return "consumed";
+			}
+			return "unknown";
+		}
+
+		[[nodiscard]] const char* GestureActionName(const Interaction::GestureActionKind kind) noexcept
+		{
+			switch (kind) {
+			case Interaction::GestureActionKind::kNone:
+				return "none";
+			case Interaction::GestureActionKind::kReleaseInZone:
+				return "release-in-zone";
+			case Interaction::GestureActionKind::kPressDraw:
+				return "press-draw";
+			}
+			return "unknown";
+		}
 
 		// What a hand holds, from ROCK with ROCK bound, else the single
 		// vanilla weapon in the configured weapon hand.
@@ -631,6 +669,10 @@ namespace Holsters {
 			s_leftHand.anchorAvailable = false;
 			s_rightHand.zone = Interaction::kNoSlot;
 			s_rightHand.anchorAvailable = false;
+			for (auto* hand : { &s_leftHand, &s_rightHand }) {
+				hand->nearestSlot = Interaction::kNoSlot;
+				hand->zoneSamples = 0;
+			}
 			isHolsterIntersected = false;
 			for (auto& [slot, holster] : HolsterRegisteredObjects) {
 				(void)slot;
@@ -1684,9 +1726,10 @@ namespace Holsters {
 				static_cast<vr::EVRButtonId>(c_holsterButtonID));
 			const bool leftHolsterHeld = (leftButtons & holsterButtonMask) != 0;
 			const bool rightHolsterHeld = (rightButtons & holsterButtonMask) != 0;
+			const bool gameStopped = isGameStopped();
 			const bool gameplayEnabled =
 				!_isConfigModeActive &&
-				!isGameStopped() &&
+				!gameStopped &&
 				!_WeaponHolsterInProgress;
 			const HandWeaponFacts leftFacts = GetHandWeaponFacts(true);
 			const HandWeaponFacts rightFacts = GetHandWeaponFacts(false);
@@ -1785,6 +1828,43 @@ namespace Holsters {
 			};
 			reportPress(s_leftHand, true, leftPhaseBefore, leftFacts);
 			reportPress(s_rightHand, false, rightPhaseBefore, rightFacts);
+
+			// Input trace, on gate changes and per press and release, never
+			// per frame. Each cause that stops every holster has its own
+			// signature: a closed gate, a press outside every zone (nearest
+			// distance and sample count), a gesture reset mid-press, or a
+			// press that never releases (runtime 2 Nov 12:45:33-52: nothing
+			// was logged while ROCK dropped weapons released at the zones).
+			const std::uint32_t inputGates =
+				(_isConfigModeActive ? 1u : 0u) | (gameStopped ? 2u : 0u) | (_WeaponHolsterInProgress ? 4u : 0u) |
+				(leftControllerAvailable ? 8u : 0u) | (rightControllerAvailable ? 16u : 0u) |
+				(s_leftHand.anchorAvailable ? 32u : 0u) | (s_rightHand.anchorAvailable ? 64u : 0u);
+			if (inputGates != s_tracedInputGates) {
+				_MESSAGE("Holster input gates: config=%d gameStopped=%d holsterInProgress=%d controllers L=%d R=%d anchors L=%d R=%d",
+					(inputGates & 1u) != 0, (inputGates & 2u) != 0, (inputGates & 4u) != 0, (inputGates & 8u) != 0,
+					(inputGates & 16u) != 0, (inputGates & 32u) != 0, (inputGates & 64u) != 0);
+				s_tracedInputGates = inputGates;
+			}
+			const auto traceHand = [&](HandInteractionRuntime& hand, const bool isLeft, const bool held,
+				const Interaction::GesturePhase before, const Interaction::GestureDecision& decision,
+				const HandWeaponFacts& facts) {
+				const auto after = hand.gesture.Phase();
+				if (held != hand.heldLastFrame) {
+					_MESSAGE("Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d",
+						held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.nearestSlot,
+						hand.nearestDistance, hand.nearestRadius, static_cast<unsigned>(hand.zoneSamples),
+						GesturePhaseName(before), GesturePhaseName(after), GestureActionName(decision.Kind()),
+						facts.holds, facts.grips, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
+						TransferFor(isLeft).active ? 1 : 0);
+				} else if (held && after == Interaction::GesturePhase::kNeedsRelease &&
+					(before == Interaction::GesturePhase::kHeld || before == Interaction::GesturePhase::kConsumed)) {
+					_MESSAGE("Holster gesture for the %s hand reset during a press (phase %s)",
+						isLeft ? "left" : "right", GesturePhaseName(before));
+				}
+				hand.heldLastFrame = held;
+			};
+			traceHand(s_leftHand, true, leftHolsterHeld, leftPhaseBefore, leftDecision, leftFacts);
+			traceHand(s_rightHand, false, rightHolsterHeld, rightPhaseBefore, rightDecision, rightFacts);
 
 			SetActivationSuppressed(
 				c_ActivationDisabled &&
@@ -1917,6 +1997,7 @@ namespace Holsters {
 						FinishWeaponBlends();
 						setupConfigMode();
 						_isConfigModeActive = true;
+						_MESSAGE("Holster config mode entered at holster %u by the config button", dominantHolster);
 					}
 				}
 				else if (!ConfigButtonPressed) {
@@ -2133,6 +2214,7 @@ namespace Holsters {
 				if (ConfigExitLButtonPressed || ConfigExitRButtonPressed) {
 					exitConfigMode();
 					_isConfigModeActive = false;
+					_MESSAGE("Holster config mode exited");
 				}
 			}
 		}
@@ -3226,6 +3308,24 @@ namespace Holsters {
 				};
 			}
 		}
+
+		const auto recordNearest = [](HandInteractionRuntime& hand,
+			const Interaction::ZoneSample* samples, const std::size_t count) {
+			hand.nearestSlot = Interaction::kNoSlot;
+			hand.zoneSamples = count;
+			float bestMargin = std::numeric_limits<float>::infinity();
+			for (std::size_t index = 0; index < count; ++index) {
+				const float margin = samples[index].distance - samples[index].radius;
+				if (margin < bestMargin) {
+					bestMargin = margin;
+					hand.nearestSlot = samples[index].slot;
+					hand.nearestDistance = samples[index].distance;
+					hand.nearestRadius = samples[index].radius;
+				}
+			}
+		};
+		recordNearest(s_leftHand, leftSamples.data(), leftSampleCount);
+		recordNearest(s_rightHand, rightSamples.data(), rightSampleCount);
 
 		const UInt32 previousLeft = s_leftHand.zone;
 		const UInt32 previousRight = s_rightHand.zone;
