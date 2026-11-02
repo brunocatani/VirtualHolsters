@@ -221,6 +221,11 @@ namespace Holsters {
 			bool pressFromZone{};
 			// When the current press started (press diagnostics).
 			Clock::time_point pressedAt{};
+			// The other hand still held this hand's weapon when this hand let
+			// go during the current press: the press never draws. A weapon held
+			// by one hand, or a grabbed object, keeps drawing on let-go.
+			bool pressTwoHanded{};
+			bool twoHandedLastFrame{};
 		};
 
 		// What a hand holds, from ROCK with ROCK bound, else the single
@@ -230,6 +235,12 @@ namespace Holsters {
 			bool known{};
 			bool holds{};
 			bool canReceive{};
+			// The other hand supports the weapon this hand fires (two-handed).
+			bool supported{};
+			// This hand supports a weapon the other hand fires (two-handed).
+			bool supports{};
+			// This hand fires or supports an equipped weapon.
+			bool grips{};
 			UInt32 nativeIndex{};
 			UInt32 formId{};
 		};
@@ -667,6 +678,12 @@ namespace Holsters {
 					!Rock::HandBusyWithObject(isLeft);
 				facts.nativeIndex = facts.holds ? weapon.slot : 0;
 				facts.formId = facts.holds ? weapon.formId : 0;
+				const auto other = Rock::GetHandWeapon(!isLeft);
+				facts.supported = facts.holds && other.role == Rock::HandRole::kSupport && other.slot == weapon.slot;
+				// A support grip alone (the firing hand detached) is a one-hand hold.
+				facts.supports = weapon.role == Rock::HandRole::kSupport &&
+					other.role == Rock::HandRole::kFiring && other.slot == weapon.slot;
+				facts.grips = facts.holds || weapon.role == Rock::HandRole::kSupport;
 				return facts;
 			}
 			if (!*g_player || !*g_gameVM || !(*g_gameVM)->m_virtualMachine) {
@@ -724,6 +741,11 @@ namespace Holsters {
 					HolsterAction::kNone;
 			case Interaction::GestureActionKind::kReleaseInZone:
 				if (facts.holds) {
+					// A two-handed weapon is never stashed: the release is
+					// ROCK's ordinary let-go.
+					if (facts.supported) {
+						return HolsterAction::kNone;
+					}
 					return occupied ? HolsterAction::kSwap : HolsterAction::kHolster;
 				}
 				return occupied && facts.canReceive ?
@@ -1347,10 +1369,16 @@ namespace Holsters {
 				return;
 			}
 			const auto mask = vr::ButtonMaskFromId(static_cast<vr::EVRButtonId>(c_holsterButtonID));
+			const bool grip = c_holsterButtonID == vr::EVRButtonId::k_EButton_Grip;
+			// A held reserved chord withholds all of the hand's game input,
+			// trigger included (ROCK effectiveHandInputSuppressionFlags). Once
+			// a draw took the press, the grip stays off ROCK's grab but the
+			// chord is dropped, so the drawn weapon fires with the grip held.
+			const bool drawTookPress = grip && phase == Interaction::GesturePhase::kConsumed;
 			Rock::ReserveHand(
 				isLeft,
-				c_holsterButtonID == vr::EVRButtonId::k_EButton_Grip,
-				mask,
+				grip,
+				drawTookPress ? 0 : mask,
 				hand.zone == 1 || hand.zone == 2);
 		}
 	}
@@ -1362,6 +1390,8 @@ namespace Holsters {
 		s_rightHand.gesture.Reset();
 		s_leftHand.pressFromZone = false;
 		s_rightHand.pressFromZone = false;
+		s_leftHand.pressTwoHanded = s_rightHand.pressTwoHanded = false;
+		s_leftHand.twoHandedLastFrame = s_rightHand.twoHandedLastFrame = false;
 		CancelTransfers();
 		ReleaseHandoffs();
 		Rock::Reset();
@@ -1689,11 +1719,35 @@ namespace Holsters {
 			const auto leftPhaseBefore = s_leftHand.gesture.Phase();
 			const auto rightPhaseBefore = s_rightHand.gesture.Phase();
 			for (auto* hand : { &s_leftHand, &s_rightHand }) {
-				const bool held = hand == &s_leftHand ? leftHolsterHeld : rightHolsterHeld;
+				const bool isLeftHand = hand == &s_leftHand;
+				const bool held = isLeftHand ? leftHolsterHeld : rightHolsterHeld;
+				const auto& facts = isLeftHand ? leftFacts : rightFacts;
+				const bool twoHandedNow = facts.supported || facts.supports;
+				const bool twoHandedBefore = hand->twoHandedLastFrame;
+				hand->twoHandedLastFrame = twoHandedNow;
+				// pressTwoHanded follows the hold while this hand grips and
+				// freezes once it lets go: on the press with toggle grip, on
+				// the release with hold grip. It outlives the release frame
+				// (the release action reads it); each press sets it afresh.
 				if (!held) {
 					hand->pressFromZone = false;
-				} else if (hand->gesture.Phase() == Interaction::GesturePhase::kIdle) {
-					hand->pressFromZone = hand->zone != Interaction::kNoSlot;
+					continue;
+				}
+				if (hand->gesture.Phase() == Interaction::GesturePhase::kIdle) {
+					// A two-handed let-go press frees the hand a frame later,
+					// which made the slot drawable mid-press (runtime 2 Nov
+					// 12:15:53). A hand already free on the press frame takes
+					// the frame before, so this does not depend on whether
+					// ROCK or VH reads the press first.
+					hand->pressTwoHanded = twoHandedNow || (!facts.grips && twoHandedBefore);
+					// Only a press that can act in its zone keeps the button
+					// from ROCK until release; any other press there (a
+					// two-handed weapon's let-go) stays ROCK's.
+					hand->pressFromZone = hand->zone != Interaction::kNoSlot &&
+						(releasePossible(*hand, isLeftHand, facts) ||
+							(!hand->pressTwoHanded && drawPossible(*hand, isLeftHand, facts)));
+				} else if (facts.grips) {
+					hand->pressTwoHanded = twoHandedNow;
 				}
 			}
 			const auto leftDecision = s_leftHand.gesture.Update({
@@ -1701,14 +1755,14 @@ namespace Holsters {
 				gameplayEnabled,
 				leftHolsterHeld,
 				s_leftHand.zone,
-				leftCanDraw
+				leftCanDraw && !s_leftHand.pressTwoHanded
 			});
 			const auto rightDecision = s_rightHand.gesture.Update({
 				rightControllerAvailable && s_rightHand.anchorAvailable,
 				gameplayEnabled,
 				rightHolsterHeld,
 				s_rightHand.zone,
-				rightCanDraw
+				rightCanDraw && !s_rightHand.pressTwoHanded
 			});
 
 			// Press diagnostics: a press on an occupied slot that does not draw
@@ -1722,8 +1776,8 @@ namespace Holsters {
 				if (hand.gesture.Phase() == Interaction::GesturePhase::kHeld) {
 					const UInt32 slot = hand.zone;
 					if (slot != Interaction::kNoSlot && holsteredWeapNames[slot] != "Empty" && !facts.holds) {
-						_MESSAGE("Holster %u press by the %s hand did not arm a draw: known=%d holds=%d canReceive=%d busyObject=%d handTransfer=%d slotTransfer=%d slotAvailable=%d",
-							slot, isLeft ? "left" : "right", facts.known, facts.holds, facts.canReceive,
+						_MESSAGE("Holster %u press by the %s hand did not arm a draw: known=%d holds=%d twoHandedPress=%d canReceive=%d busyObject=%d handTransfer=%d slotTransfer=%d slotAvailable=%d",
+							slot, isLeft ? "left" : "right", facts.known, facts.holds, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
 							Rock::HandBusyWithObject(isLeft) ? 1 : 0, TransferFor(isLeft).active ? 1 : 0,
 							SlotHasTransfer(slot) ? 1 : 0, SlotAvailable(slot) ? 1 : 0);
 					}
@@ -1803,7 +1857,14 @@ namespace Holsters {
 					// this frame (a holster or swap), so read its weapon again.
 					const HandWeaponFacts facts = index == 1 ? GetHandWeaponFacts(false) : *handInputs[index].second;
 					const UInt32 slot = decision.ActionSlot();
-					const HolsterAction action = DecideAction(decision.Kind(), slot, isLeft, facts);
+					HolsterAction action = DecideAction(decision.Kind(), slot, isLeft, facts);
+					// A two-handed let-go press that ends in an occupied zone
+					// does not draw either: the hand is free by its release.
+					const bool twoHandedLetGo = decision.Kind() == Interaction::GestureActionKind::kReleaseInZone &&
+						(isLeft ? s_leftHand : s_rightHand).pressTwoHanded;
+					if (action == HolsterAction::kDraw && twoHandedLetGo) {
+						action = HolsterAction::kNone;
+					}
 					bool acted = false;
 					switch (action) {
 					case HolsterAction::kHolster:
@@ -1825,10 +1886,10 @@ namespace Holsters {
 						break;
 					case HolsterAction::kNone:
 						if (slot != Interaction::kNoSlot) {
-							_MESSAGE("Holster %u %s by the %s hand did nothing: occupied=%d known=%d holds=%d canReceive=%d handBusy=%d slotBusy=%d",
+							_MESSAGE("Holster %u %s by the %s hand did nothing: occupied=%d known=%d holds=%d twoHanded=%d twoHandedPress=%d canReceive=%d handBusy=%d slotBusy=%d",
 								slot, decision.Kind() == Interaction::GestureActionKind::kPressDraw ? "press" : "release",
 								isLeft ? "left" : "right", holsteredWeapNames[slot] != "Empty" ? 1 : 0,
-								facts.known, facts.holds, facts.canReceive,
+								facts.known, facts.holds, facts.supported, twoHandedLetGo, facts.canReceive,
 								TransferFor(isLeft).active ? 1 : 0, SlotHasTransfer(slot) ? 1 : 0);
 						}
 						break;
