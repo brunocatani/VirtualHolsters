@@ -1,5 +1,9 @@
 #pragma once
 
+// Direct OpenVR access (replaces the FO4VRTools dependency): controller
+// buttons, sticks, device poses and haptics, read from the OpenVR session the
+// game already owns.
+
 #include "f4se/NiNodes.h"
 #include "f4se/NiTypes.h"
 

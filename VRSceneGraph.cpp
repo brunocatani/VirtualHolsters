@@ -140,8 +140,8 @@ namespace VRSceneGraph
 
 			std::uintptr_t observedTarget{};
 			return ReadPointer(
-					   vtable + slot * sizeof(std::uintptr_t),
-					   observedTarget) &&
+					vtable + slot * sizeof(std::uintptr_t),
+					observedTarget) &&
 				observedTarget == expectedTarget &&
 				IsExecutableGameTextAddress(observedTarget);
 		}
@@ -155,8 +155,8 @@ namespace VRSceneGraph
 			std::uintptr_t vtable{};
 			std::uintptr_t destructor{};
 			return ReadPointer(
-					   reinterpret_cast<std::uintptr_t>(object),
-					   vtable) &&
+					reinterpret_cast<std::uintptr_t>(object),
+					vtable) &&
 				ReadPointer(vtable, destructor) &&
 				IsExecutableGameTextAddress(destructor);
 		}

@@ -72,8 +72,8 @@ namespace Holsters {
 			delete g_weaponOffsets;
 		}
 		g_weaponOffsets = new WeaponOffset();
-        const auto offsetsPath = config::path("VRH_weapon_offsets");
-        if (offsetsPath.empty()) return;
+		const auto offsetsPath = config::path("VRH_weapon_offsets");
+		if (offsetsPath.empty()) return;
 		loadOffsetJsonFile(); //load default list if it exists
 		if (!(std::filesystem::exists(offsetsPath) && std::filesystem::is_directory(offsetsPath)))
 			std::filesystem::create_directories(offsetsPath);
@@ -91,8 +91,8 @@ namespace Holsters {
 		}
 	}
 	void loadOffsetJsonFile(const std::string& requestedFile) {
-        const auto file = requestedFile.empty() ? config::path("VRH_weapon_offsets.json") : requestedFile;
-        if (file.empty()) return;
+		const auto file = requestedFile.empty() ? config::path("VRH_weapon_offsets.json") : requestedFile;
+		if (file.empty()) return;
 
 		json weaponJson;
 		std::ifstream inF;
@@ -133,8 +133,8 @@ namespace Holsters {
 	}
 
 	void saveOffsetJsonFile(const json& weaponJson, const std::string& requestedFile) {
-        const auto file = requestedFile.empty() ? config::path("VRH_weapon_offsets.json") : requestedFile;
-        if (file.empty()) return;
+		const auto file = requestedFile.empty() ? config::path("VRH_weapon_offsets.json") : requestedFile;
+		if (file.empty()) return;
 		std::ofstream outF;
 
 		outF.open(file, std::ios::out);
@@ -154,8 +154,8 @@ namespace Holsters {
 		}
 	}
 	void writeOffsetJson() {
-        const auto offsetsPath = config::path("VRH_weapon_offsets");
-        if (offsetsPath.empty()) return;
+		const auto offsetsPath = config::path("VRH_weapon_offsets");
+		if (offsetsPath.empty()) return;
 
 		std::string file;
 

@@ -28,49 +28,51 @@
 #include "f4se/BSCollision.h"
 
 namespace {
-    // On a missing file, record the same defaults the loader reads below.
-    class FirstRunIni : public CSimpleIniA {
-    public:
-        explicit FirstRunIni(bool create) : create_(create) {}
-        long GetLongValue(const char* section, const char* key, long fallback) {
-            if (create_) SetLongValue(section, key, fallback);
-            return CSimpleIniA::GetLongValue(section, key, fallback);
-        }
-        double GetDoubleValue(const char* section, const char* key, double fallback) {
-            if (create_) SetDoubleValue(section, key, fallback);
-            return CSimpleIniA::GetDoubleValue(section, key, fallback);
-        }
-        bool GetBoolValue(const char* section, const char* key, bool fallback) {
-            if (create_) SetBoolValue(section, key, fallback);
-            return CSimpleIniA::GetBoolValue(section, key, fallback);
-        }
-    private:
-        bool create_;
-    };
+	// On a missing file, record the same defaults the loader reads below.
+	class FirstRunIni : public CSimpleIniA {
+	public:
+		explicit FirstRunIni(bool create) : create_(create) {}
+		long GetLongValue(const char* section, const char* key, long fallback) {
+			if (create_) SetLongValue(section, key, fallback);
+			return CSimpleIniA::GetLongValue(section, key, fallback);
+		}
+		double GetDoubleValue(const char* section, const char* key, double fallback) {
+			if (create_) SetDoubleValue(section, key, fallback);
+			return CSimpleIniA::GetDoubleValue(section, key, fallback);
+		}
+		bool GetBoolValue(const char* section, const char* key, bool fallback) {
+			if (create_) SetBoolValue(section, key, fallback);
+			return CSimpleIniA::GetBoolValue(section, key, fallback);
+		}
+	private:
+		bool create_;
+	};
 
-    bool saveNewDefaults(const CSimpleIniA& ini, const std::filesystem::path& path) {
-        try {
-            std::filesystem::create_directories(path.parent_path());
-            std::string text;
-            if (ini.Save(text, false) < 0) return false;
-            const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (file == INVALID_HANDLE_VALUE) {
-                const auto error = GetLastError();
-                return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS;
-            }
-            std::unique_ptr<void, decltype(&CloseHandle)> output(file, &CloseHandle);
-            DWORD written = 0;
-            if (WriteFile(output.get(), text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
-                written == text.size() && FlushFileBuffers(output.get())) return true;
-            output.reset();
-            std::error_code error;
-            std::filesystem::remove(path, error);
-        } catch (const std::exception& error) {
-            _WARNING("Cannot create VirtualHolsters defaults: %s", error.what());
-        }
-        return false;
-    }
+	// Writes the recorded defaults only when no file exists yet (CREATE_NEW),
+	// so a file the user created in the meantime is never overwritten.
+	bool saveNewDefaults(const CSimpleIniA& ini, const std::filesystem::path& path) {
+		try {
+			std::filesystem::create_directories(path.parent_path());
+			std::string text;
+			if (ini.Save(text, false) < 0) return false;
+			const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+				nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file == INVALID_HANDLE_VALUE) {
+				const auto error = GetLastError();
+				return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS;
+			}
+			std::unique_ptr<void, decltype(&CloseHandle)> output(file, &CloseHandle);
+			DWORD written = 0;
+			if (WriteFile(output.get(), text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
+				written == text.size() && FlushFileBuffers(output.get())) return true;
+			output.reset();
+			std::error_code error;
+			std::filesystem::remove(path, error);
+		} catch (const std::exception& error) {
+			_WARNING("Cannot create VirtualHolsters defaults: %s", error.what());
+		}
+		return false;
+	}
 }
 
 bool gPlayerisSneaking = false;
@@ -192,8 +194,36 @@ namespace Holsters {
 	bool _isConfigModeActive = false;
 	bool initBoneTreeFlag = true;
 
+	/*
+	 * Per-hand holster interaction (added in this fork; the original code
+	 * resumes at "Main Functions" below).
+	 *
+	 * Each hand has its own holster zone, button gesture and draw, so with ROCK
+	 * both hands can holster and draw at the same time (akimbo). Per frame,
+	 * from MainLoop:
+	 *   1. detectHolsterSphere  finds the holster zone each hand is in;
+	 *   2. VRButtonsMain        turns each hand's holster-button gesture
+	 *                           (HolsterInteraction.h) into an action through
+	 *                           DecideAction: holster, draw or swap;
+	 *   3. ServiceTransfers     completes running draws over the next frames;
+	 *      ServiceHandoffs      removes a draw's stand-in once the real weapon
+	 *                           shows in the hand.
+	 *
+	 * With ROCK 1.0 bound (RockProvider.h), ROCK reports which hand holds which
+	 * weapon, equips into a chosen hand and unequips a chosen slot. Without
+	 * ROCK the mod uses the single vanilla weapon in the configured weapon hand.
+	 *
+	 * A draw takes the holster's displayed clone into the hand at once (the
+	 * "stand-in"), so the weapon never disappears while the engine equips it.
+	 */
 	namespace
 	{
+		// ----------------------------------------------------------------------
+		// Interaction state
+		// Tuning, per-hand runtime, the action a gesture asks for, running
+		// draws (HandTransfer) and their stand-ins (HandHandoff).
+		// ----------------------------------------------------------------------
+
 		constexpr std::size_t kMaximumHolsterSlots = 7;
 		SlotPolicy::SlotMask s_enabledHolsterSlots =
 			SlotPolicy::kAllSlotsMask;
@@ -235,7 +265,7 @@ namespace Holsters {
 			bool heldLastFrame{};
 		};
 
-		// Input gates the trace last reported (bit set, see TraceInputGates).
+		// Input gates the trace last reported (bit set built in VRButtonsMain).
 		std::uint32_t s_tracedInputGates{ 0xFFFFFFFFu };
 
 		[[nodiscard]] const char* GesturePhaseName(const Interaction::GesturePhase phase) noexcept
@@ -362,6 +392,11 @@ namespace Holsters {
 		{
 			return s_transfers[isLeft ? 1 : 0];
 		}
+
+		// ----------------------------------------------------------------------
+		// Transform math
+		// FO4VR's NiMatrix43 stores a child's axes as rows.
+		// ----------------------------------------------------------------------
 
 		// FO4VR stores child axes as matrix rows: a local vector maps to world
 		// as Transpose()*v (raw compose helper 0x1401A8D60, as ROCK verifies).
@@ -517,6 +552,12 @@ namespace Holsters {
 			result.scale = from.scale + (to.scale - from.scale) * t;
 			return result;
 		}
+
+		// ----------------------------------------------------------------------
+		// Haptics, hand position, zones and activation
+		// While a hand works a holster with c_ActivationDisabled, the game's
+		// own grab and activate are switched off and restored afterwards.
+		// ----------------------------------------------------------------------
 
 		void PulseHand(const bool isLeft)
 		{
@@ -683,6 +724,12 @@ namespace Holsters {
 			}
 		}
 
+		// ----------------------------------------------------------------------
+		// Holster slots and what each hand holds
+		// HandWeaponFacts comes from ROCK when bound, else from the vanilla
+		// equipped weapon; DecideAction turns a gesture into a HolsterAction.
+		// ----------------------------------------------------------------------
+
 		// Defined with the weapon display functions below.
 		NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, UInt32 handle,
 			const char* nodeName, const NiTransform* startWorld);
@@ -799,6 +846,12 @@ namespace Holsters {
 			return HolsterAction::kNone;
 		}
 
+		// ----------------------------------------------------------------------
+		// Holstering
+		// The hand's weapon goes into a slot: capture its on-screen pose,
+		// show the clone there, unequip, and tag the slot.
+		// ----------------------------------------------------------------------
+
 		// Where the hand's weapon model is on screen now. The first weapon's
 		// model is rendered where its node stands. ROCK re-places the second
 		// weapon's model late in the frame after the engine returns it to its
@@ -851,6 +904,49 @@ namespace Holsters {
 		// The hand's weapon goes into the empty slot. The clone appears where
 		// the hand held the weapon in the frame the weapon leaves the hand, so
 		// it never disappears, then eases into the holster.
+		bool HolsterHandWeapon(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts)
+		{
+			const WeaponStack stack = FindHandStack(facts);
+			if (!stack.found) {
+				_WARNING("Holster %u refused: the %s hand's weapon stack was not found", slot, isLeft ? "left" : "right");
+				return false;
+			}
+			if (!CanTagAnother(stack.name, true)) {
+				_MESSAGE("Holster %u refused: every '%s' is already holstered", slot, stack.name.c_str());
+				return false;
+			}
+			NiNode* model = nullptr;
+			NiTransform world{};
+			const bool captured = CaptureHeldWeapon(facts, model, world);
+			nDestoryWeapon(slot, true, false);
+			if (gShowWeapons && captured) {
+				nRegisterWeapon(stack.form->GetFullName(), stack.form, model, slot, stack.melee, &world);
+			}
+			const auto registered = WeaponRegisteredObjects.find(slot);
+			const bool presented = registered != WeaponRegisteredObjects.end() &&
+				registered->second && registered->second->WeapMesh;
+			if (!UnequipHandWeapon(facts, stack)) {
+				_WARNING("Holster %u refused: the %s hand's weapon %08X could not be unequipped",
+					slot, isLeft ? "left" : "right", facts.formId);
+				nDestoryWeapon(slot, true, false);
+				return false;
+			}
+			SetHolsterTag(slot, stack.name, stack.nameLength);
+			if (gShowWeapons && !presented) {
+				QueueStoredVisual(FindStoredStack(stack.name), slot);
+			}
+			PulseHand(isLeft);
+			_MESSAGE("Holster %u stored '%s' from the %s hand (index %u)",
+				slot, stack.name.c_str(), isLeft ? "left" : "right", facts.nativeIndex);
+			return true;
+		}
+
+		// ----------------------------------------------------------------------
+		// Draw stand-ins
+		// The holster's clone stays in the drawing hand until the real weapon
+		// shows there, then is released (ServiceHandoffs).
+		// ----------------------------------------------------------------------
+
 		// Stand-ins and learned grips live in the hand's controller frame,
 		// where ROCK places the real weapon; the hand bone moves between an
 		// open hand and a grip, so a pose kept against it lands off target.
@@ -964,6 +1060,39 @@ namespace Holsters {
 			transfer.inHand = nullptr;
 		}
 
+		void ServiceHandoffs()
+		{
+			const auto now = Clock::now();
+			for (int index = 0; index < 2; ++index) {
+				auto& handoff = s_handoffs[index];
+				if (!handoff.clone) {
+					continue;
+				}
+				const bool isLeft = index == 1;
+				const bool shown = handoff.weaponSlotKnown && Rock::IsBound() ?
+					Rock::WeaponShown(handoff.weaponSlot, handoff.formId) :
+					RealWeaponVisible(isLeft, handoff.formId);
+				if (shown) {
+					releaseWeaponClone(handoff.clone);
+				} else if (now > handoff.deadline) {
+					_MESSAGE("Holster draw stand-in in the %s hand released before the real weapon showed",
+						isLeft ? "left" : "right");
+					releaseWeaponClone(handoff.clone);
+				}
+			}
+		}
+
+		void ReleaseHandoffs()
+		{
+			for (auto& handoff : s_handoffs) {
+				releaseWeaponClone(handoff.clone);
+			}
+		}
+
+		// ----------------------------------------------------------------------
+		// Warm weapons
+		// ----------------------------------------------------------------------
+
 		// ROCK keeps every holstered weapon's animations loaded, so a draw
 		// never waits on the engine's first-use load. Sent after a load and
 		// whenever a holster's contents change; the inventory is read only
@@ -996,71 +1125,11 @@ namespace Holsters {
 			}
 		}
 
-		void ServiceHandoffs()
-		{
-			const auto now = Clock::now();
-			for (int index = 0; index < 2; ++index) {
-				auto& handoff = s_handoffs[index];
-				if (!handoff.clone) {
-					continue;
-				}
-				const bool isLeft = index == 1;
-				const bool shown = handoff.weaponSlotKnown && Rock::IsBound() ?
-					Rock::WeaponShown(handoff.weaponSlot, handoff.formId) :
-					RealWeaponVisible(isLeft, handoff.formId);
-				if (shown) {
-					releaseWeaponClone(handoff.clone);
-				} else if (now > handoff.deadline) {
-					_MESSAGE("Holster draw stand-in in the %s hand released before the real weapon showed",
-						isLeft ? "left" : "right");
-					releaseWeaponClone(handoff.clone);
-				}
-			}
-		}
-
-		void ReleaseHandoffs()
-		{
-			for (auto& handoff : s_handoffs) {
-				releaseWeaponClone(handoff.clone);
-			}
-		}
-
-		bool HolsterHandWeapon(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts)
-		{
-			const WeaponStack stack = FindHandStack(facts);
-			if (!stack.found) {
-				_WARNING("Holster %u refused: the %s hand's weapon stack was not found", slot, isLeft ? "left" : "right");
-				return false;
-			}
-			if (!CanTagAnother(stack.name, true)) {
-				_MESSAGE("Holster %u refused: every '%s' is already holstered", slot, stack.name.c_str());
-				return false;
-			}
-			NiNode* model = nullptr;
-			NiTransform world{};
-			const bool captured = CaptureHeldWeapon(facts, model, world);
-			nDestoryWeapon(slot, true, false);
-			if (gShowWeapons && captured) {
-				nRegisterWeapon(stack.form->GetFullName(), stack.form, model, slot, stack.melee, &world);
-			}
-			const auto registered = WeaponRegisteredObjects.find(slot);
-			const bool presented = registered != WeaponRegisteredObjects.end() &&
-				registered->second && registered->second->WeapMesh;
-			if (!UnequipHandWeapon(facts, stack)) {
-				_WARNING("Holster %u refused: the %s hand's weapon %08X could not be unequipped",
-					slot, isLeft ? "left" : "right", facts.formId);
-				nDestoryWeapon(slot, true, false);
-				return false;
-			}
-			SetHolsterTag(slot, stack.name, stack.nameLength);
-			if (gShowWeapons && !presented) {
-				QueueStoredVisual(FindStoredStack(stack.name), slot);
-			}
-			PulseHand(isLeft);
-			_MESSAGE("Holster %u stored '%s' from the %s hand (index %u)",
-				slot, stack.name.c_str(), isLeft ? "left" : "right", facts.nativeIndex);
-			return true;
-		}
+		// ----------------------------------------------------------------------
+		// Drawing and swapping
+		// One HandTransfer per hand. BeginDraw requests the equip and takes the
+		// clone into the hand; ServiceTransfers follows the equip each frame.
+		// ----------------------------------------------------------------------
 
 		bool RequestDraw(HandTransfer& transfer)
 		{
@@ -1314,6 +1383,11 @@ namespace Holsters {
 			}
 		}
 
+		// ----------------------------------------------------------------------
+		// Display blending
+		// Clones ease between the hand and the holster pose.
+		// ----------------------------------------------------------------------
+
 		void AdvanceBlend(MyWeapon& weapon)
 		{
 			if (!weapon.blending || !weapon.WeapMesh) {
@@ -1396,6 +1470,10 @@ namespace Holsters {
 				}
 			}
 		}
+
+		// ----------------------------------------------------------------------
+		// ROCK input reservation
+		// ----------------------------------------------------------------------
 
 		// ROCK must not grab, drop, stash or act on the holster button with a
 		// hand working a holster, including a press that has left the zone.
@@ -1777,11 +1855,11 @@ namespace Holsters {
 					continue;
 				}
 				if (hand->gesture.Phase() == Interaction::GesturePhase::kIdle) {
-					// A two-handed let-go press frees the hand a frame later,
-					// which made the slot drawable mid-press (runtime 2 Nov
-					// 12:15:53). A hand already free on the press frame takes
+					// ROCK's toggle grip lets go on the press and frees the hand
+					// a frame later, which would make the slot drawable
+					// mid-press. A hand already free on the press frame takes
 					// the frame before, so this does not depend on whether
-					// ROCK or VH reads the press first.
+					// ROCK or this mod reads the press first.
 					hand->pressTwoHanded = twoHandedNow || (!facts.grips && twoHandedBefore);
 					// Only a press that can act in its zone keeps the button
 					// from ROCK until release; any other press there (a
@@ -1830,11 +1908,10 @@ namespace Holsters {
 			reportPress(s_rightHand, false, rightPhaseBefore, rightFacts);
 
 			// Input trace, on gate changes and per press and release, never
-			// per frame. Each cause that stops every holster has its own
-			// signature: a closed gate, a press outside every zone (nearest
-			// distance and sample count), a gesture reset mid-press, or a
-			// press that never releases (runtime 2 Nov 12:45:33-52: nothing
-			// was logged while ROCK dropped weapons released at the zones).
+			// per frame. Each cause that can stop every holster at once has
+			// its own signature: a closed gate, a press outside every zone
+			// (nearest distance and sample count), a gesture reset mid-press,
+			// or a press that never releases.
 			const std::uint32_t inputGates =
 				(_isConfigModeActive ? 1u : 0u) | (gameStopped ? 2u : 0u) | (_WeaponHolsterInProgress ? 4u : 0u) |
 				(leftControllerAvailable ? 8u : 0u) | (rightControllerAvailable ? 16u : 0u) |
@@ -2289,16 +2366,16 @@ namespace Holsters {
 	}
 
 	bool loadConfigFiles() {
-        const auto iniPath = config::path("VirtualHolsters.ini");
-        if (iniPath.empty()) {
-            _WARNING("Documents could not be resolved; VirtualHolsters configuration is unavailable");
-            return false;
-        }
-        std::error_code pathError;
-        const bool missing = !std::filesystem::exists(iniPath, pathError);
-        if (pathError) return false;
-        FirstRunIni ini(missing);
-        SI_Error rc = missing ? SI_OK : ini.LoadFile(iniPath.c_str());
+		const auto iniPath = config::path("VirtualHolsters.ini");
+		if (iniPath.empty()) {
+			_WARNING("Documents could not be resolved; VirtualHolsters configuration is unavailable");
+			return false;
+		}
+		std::error_code pathError;
+		const bool missing = !std::filesystem::exists(iniPath, pathError);
+		if (pathError) return false;
+		FirstRunIni ini(missing);
+		SI_Error rc = missing ? SI_OK : ini.LoadFile(iniPath.c_str());
 
 		if (rc < 0) {
 			_MESSAGE("ERROR: cannot read VirtualHolsters.ini");
@@ -2367,10 +2444,10 @@ namespace Holsters {
 		PAholsterArtWorkPresets[5] = (int)ini.GetLongValue("Config Mode", "PAHolster05CustomArtSlot", 0);
 		PAholsterArtWorkPresets[6] = (int)ini.GetLongValue("Config Mode", "PAHolster06CustomArtSlot", 0);
 		PAholsterArtWorkPresets[7] = (int)ini.GetLongValue("Config Mode", "PAHolster07CustomArtSlot", 0);
-        if (missing && !saveNewDefaults(ini, iniPath)) {
-            _WARNING("Cannot create VirtualHolsters configuration");
-            return false;
-        }
+		if (missing && !saveNewDefaults(ini, iniPath)) {
+			_WARNING("Cannot create VirtualHolsters configuration");
+			return false;
+		}
 		for (const char* folder : { "VRH_weapon_offsets", "VRH_WeaponBlackList", "VRH_MagazineBlackList" }) {
 			const int copied = config::seedMissingDefaults(folder);
 			if (copied < 0) {

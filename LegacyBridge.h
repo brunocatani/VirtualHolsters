@@ -1,5 +1,9 @@
 #pragma once
 
+// The boundary between the CommonLibF4VR plugin entry (main.cpp, hook.cpp) and
+// the F4SEVR SDK code the original mod is built on (Holsters, menus, Papyrus).
+// Every call catches exceptions, so none reaches the engine.
+
 namespace LegacyBridge
 {
 	bool InitializeLogging() noexcept;

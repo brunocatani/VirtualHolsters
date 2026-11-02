@@ -1,3 +1,6 @@
+// Unit tests for the engine-free holster rules: the button gesture, zone
+// selection and slot enable masks. Built only by the build_tests target.
+
 #include "HolsterInteraction.h"
 #include "HolsterSlotPolicy.h"
 

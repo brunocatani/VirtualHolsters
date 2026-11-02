@@ -1,5 +1,8 @@
 #pragma once
 
+// The holster button gesture and zone selection, free of engine types so the
+// per-hand rules are unit tested (tests/HolsterInteractionTests.cpp).
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>

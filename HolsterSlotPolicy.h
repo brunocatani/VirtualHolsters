@@ -1,5 +1,8 @@
 #pragma once
 
+// Which holster slots are enabled (one bit per slot, 1 to 7) and their INI key
+// names. Each slot can be switched off on its own.
+
 #include <array>
 #include <cstdint>
 

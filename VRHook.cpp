@@ -66,8 +66,8 @@ namespace VRHook
 
 		try {
 			for (vr::TrackedDeviceIndex_t index = 0;
-				 index < vr::k_unMaxTrackedDeviceCount;
-				 ++index) {
+				index < vr::k_unMaxTrackedDeviceCount;
+				++index) {
 				switch (system_->GetTrackedDeviceClass(index)) {
 				case vr::TrackedDeviceClass_GenericTracker:
 					viveTrackers_.insert_or_assign(
@@ -133,10 +133,10 @@ namespace VRHook
 		}
 
 		return compositor_->GetLastPoses(
-				   renderPoses_,
-				   vr::k_unMaxTrackedDeviceCount,
-				   gamePoses_,
-				   vr::k_unMaxTrackedDeviceCount) ==
+				renderPoses_,
+				vr::k_unMaxTrackedDeviceCount,
+				gamePoses_,
+				vr::k_unMaxTrackedDeviceCount) ==
 			vr::VRCompositorError_None;
 	}
 
@@ -261,8 +261,8 @@ namespace VRHook
 	{
 		const auto now = std::chrono::steady_clock::now();
 		const auto service = [this, now](
-								 HapticRequest& request,
-								 const vr::ETrackedControllerRole role) {
+								HapticRequest& request,
+								const vr::ETrackedControllerRole role) {
 			if (!request.active) {
 				return;
 			}
