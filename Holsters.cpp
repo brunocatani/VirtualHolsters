@@ -282,7 +282,7 @@ namespace Holsters {
 
 		// Holster diagnostics (game thread only): why the frame loop skipped,
 		// last reported per hand, and a heartbeat every kHeartbeatSeconds.
-		enum class FrameSkip : std::uint8_t { kNone, kNoPlayer, kNoRoot, kNoFirstPersonSkeleton, kBoneTreeInit };
+		enum class FrameSkip : std::uint8_t { kNone, kNoPlayer, kNoRoot, kBoneTreeInit };
 		FrameSkip s_tracedFrameSkip{ FrameSkip::kNone };
 		constexpr float kHeartbeatSeconds = 10.0F;
 		float s_heartbeatElapsed{};
@@ -296,7 +296,6 @@ namespace Holsters {
 			case FrameSkip::kNone: return "none";
 			case FrameSkip::kNoPlayer: return "no-player";
 			case FrameSkip::kNoRoot: return "no-third-person-root";
-			case FrameSkip::kNoFirstPersonSkeleton: return "no-first-person-skeleton";
 			case FrameSkip::kBoneTreeInit: return "bone-tree-init-failed";
 			}
 			return "?";
@@ -1687,17 +1686,20 @@ namespace Holsters {
 				_MESSAGE("Main Menu Detected - RESETTING TO FIRST RUN");
 			}
 		}
+		// Ready once the player's third-person root exists: zones, hands and
+		// bones all come from its flattened bone tree. The F4SE header's
+		// firstPersonSkeleton (PlayerCharacter+0xB78) is a flat layout; on
+		// FO4VR that offset holds lastKnownGoodPosition.z (CommonLibF4VR
+		// PlayerCharacter, 0xB70), which is 0 on any floor at height 0, so
+		// gating on it switched every zone off while the player stood there.
 		if (!(*g_player) ||
 			!(*g_player)->unkF0 ||
-			!(*g_player)->unkF0->rootNode ||
-			!(*g_player)->firstPersonSkeleton) {
-			TraceFrameSkip(!(*g_player) ? FrameSkip::kNoPlayer :
-				(!(*g_player)->unkF0 || !(*g_player)->unkF0->rootNode) ? FrameSkip::kNoRoot :
-				FrameSkip::kNoFirstPersonSkeleton);
+			!(*g_player)->unkF0->rootNode) {
+			TraceFrameSkip(!(*g_player) ? FrameSkip::kNoPlayer : FrameSkip::kNoRoot);
 			resetInteractionState();
 			return;
 		}
-		if ((*g_player)->unkF0 && (*g_player)->unkF0->rootNode && (*g_player)->firstPersonSkeleton != nullptr) {
+		{
 			if (initBoneTreeFlag) {
 				if (!initBoneTree()) {
 					TraceFrameSkip(FrameSkip::kBoneTreeInit);
@@ -3511,7 +3513,6 @@ namespace Holsters {
 
 	void detectHolsterSphere() {
 		if (!(*g_player) ||
-			!(*g_player)->firstPersonSkeleton ||
 			!(*g_player)->unkF0 ||
 			!(*g_player)->unkF0->rootNode ||
 			!(*g_player)->unkF0->rootNode->m_children.m_data ||
