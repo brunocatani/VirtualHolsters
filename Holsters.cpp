@@ -263,6 +263,9 @@ namespace Holsters {
 			float nearestRadius{};
 			std::size_t zoneSamples{};
 			bool heldLastFrame{};
+			// Hand point the zone test used this frame (world), for the
+			// press trace's position fields.
+			NiPoint3 position{};
 		};
 
 		// Input gates the trace last reported (bit set built in VRButtonsMain).
@@ -460,6 +463,65 @@ namespace Holsters {
 			local.scale = world.scale * inverseScale;
 			return std::isfinite(local.pos.x) && std::isfinite(local.pos.y) &&
 				std::isfinite(local.pos.z) && std::isfinite(local.scale);
+		}
+
+		NiPoint3 WorldPointToLocal(const NiTransform& parent, const NiPoint3& world) noexcept
+		{
+			const float inverseScale =
+				std::fabs(parent.scale) > 0.0001F ? 1.0F / parent.scale : 1.0F;
+			NiPoint3 local = WorldVectorToLocal(parent.rot, world - parent.pos);
+			local.x *= inverseScale;
+			local.y *= inverseScale;
+			local.z *= inverseScale;
+			return local;
+		}
+
+		// Press trace position fields for the hand's nearest holster. A press
+		// that misses every zone has two distinct causes: the zone moved
+		// against the body (centerInBody changes between presses at the same
+		// holster) or the hand went for the displayed weapon away from the
+		// zone centre (handInBody stays near the shown weapon, displayOffset
+		// large). Event-only: called on button edges, never per frame.
+		void FormatNearestPlacement(const UInt32 slot, const NiPoint3& handWorld,
+			char* buffer, const std::size_t size) noexcept
+		{
+			buffer[0] = '\0';
+			const auto holsterIt = HolsterRegisteredObjects.find(slot);
+			if (holsterIt == HolsterRegisteredObjects.end() || !holsterIt->second ||
+				!holsterIt->second->bone) {
+				return;
+			}
+			const MyHolster& holster = *holsterIt->second;
+			const NiTransform& boneWorld = holster.bone->m_worldTransform;
+			const NiPoint3 center = LocalPointToWorld(boneWorld, holster.offset);
+			const NiPoint3 handInBone = WorldPointToLocal(boneWorld, handWorld);
+
+			NiAVObject* bodyRoot = (*g_player) && (*g_player)->unkF0 ? (*g_player)->unkF0->rootNode : nullptr;
+			NiPoint3 centerInBody{};
+			NiPoint3 handInBody{};
+			if (bodyRoot) {
+				centerInBody = WorldPointToLocal(bodyRoot->m_worldTransform, center);
+				handInBody = WorldPointToLocal(bodyRoot->m_worldTransform, handWorld);
+			}
+
+			float displayOffset = -1.0F;
+			float handToDisplay = -1.0F;
+			const auto weaponIt = WeaponRegisteredObjects.find(slot);
+			if (weaponIt != WeaponRegisteredObjects.end() && weaponIt->second &&
+				weaponIt->second->WeapMesh) {
+				const NiPoint3 display = weaponIt->second->WeapMesh->m_worldTransform.pos;
+				displayOffset = vec3_len(display - center);
+				handToDisplay = vec3_len(handWorld - display);
+			}
+
+			std::snprintf(buffer, size,
+				" bone=%s boneScale=%.2f handInBone=(%.1f,%.1f,%.1f) offset=(%.1f,%.1f,%.1f) centerInBody=(%.1f,%.1f,%.1f) handInBody=(%.1f,%.1f,%.1f) body=%d displayOffset=%.1f handToDisplay=%.1f",
+				holster.bone->m_name.c_str() ? holster.bone->m_name.c_str() : "?", boneWorld.scale,
+				handInBone.x, handInBone.y, handInBone.z,
+				holster.offset.x, holster.offset.y, holster.offset.z,
+				centerInBody.x, centerInBody.y, centerInBody.z,
+				handInBody.x, handInBody.y, handInBody.z, bodyRoot ? 1 : 0,
+				displayOffset, handToDisplay);
 		}
 
 		struct Quaternion
@@ -1927,12 +1989,14 @@ namespace Holsters {
 				const HandWeaponFacts& facts) {
 				const auto after = hand.gesture.Phase();
 				if (held != hand.heldLastFrame) {
-					_MESSAGE("Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d",
+					char placement[384];
+					FormatNearestPlacement(hand.nearestSlot, hand.position, placement, sizeof(placement));
+					_MESSAGE("Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d%s",
 						held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.nearestSlot,
 						hand.nearestDistance, hand.nearestRadius, static_cast<unsigned>(hand.zoneSamples),
 						GesturePhaseName(before), GesturePhaseName(after), GestureActionName(decision.Kind()),
 						facts.holds, facts.grips, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
-						TransferFor(isLeft).active ? 1 : 0);
+						TransferFor(isLeft).active ? 1 : 0, placement);
 				} else if (held && after == Interaction::GesturePhase::kNeedsRelease &&
 					(before == Interaction::GesturePhase::kHeld || before == Interaction::GesturePhase::kConsumed)) {
 					_MESSAGE("Holster gesture for the %s hand reset during a press (phase %s)",
@@ -3406,6 +3470,8 @@ namespace Holsters {
 
 		const UInt32 previousLeft = s_leftHand.zone;
 		const UInt32 previousRight = s_rightHand.zone;
+		s_leftHand.position = leftPosition;
+		s_rightHand.position = rightPosition;
 		s_leftHand.anchorAvailable = leftAvailable;
 		s_rightHand.anchorAvailable = rightAvailable;
 		s_leftHand.zone = leftAvailable ?
