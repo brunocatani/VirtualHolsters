@@ -607,6 +607,22 @@ namespace Holsters::Rock
 		return true;
 	}
 
+	RawButtonRead ReadRawButtonDetail(const bool isLeft, const std::uint32_t buttonId) noexcept
+	{
+		RawButtonRead read{};
+		read.owner = s_state.client.owner() && s_state.input;
+		if (!read.owner) {
+			return read;
+		}
+		api::input::RawWandButtonState state{};
+		read.status = static_cast<std::int32_t>(s_state.input->getRawWandButtonState(
+			s_state.client.owner(), ToHand(isLeft), buttonId, &state));
+		read.available = state.available != 0;
+		read.reason = static_cast<std::uint32_t>(state.availabilityReason);
+		read.held = state.held != 0;
+		return read;
+	}
+
 	bool ReadRawStick(const bool isLeft, float& x, float& y) noexcept
 	{
 		x = 0.0F;

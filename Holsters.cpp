@@ -271,6 +271,59 @@ namespace Holsters {
 		// Input gates the trace last reported (bit set built in VRButtonsMain).
 		std::uint32_t s_tracedInputGates{ 0xFFFFFFFFu };
 
+		// The player's third-person root and flattened bone tree that the
+		// holster bones and boneTreeMap were resolved from (initBoneTree).
+		// Both are raw engine pointers looked up once; a new tree means every
+		// holster bone and bone index is stale, so the next frame rebuilds.
+		const void* s_resolvedRoot{};
+		const void* s_resolvedBoneTree{};
+		int s_resolvedTransforms{};
+		bool s_skeletonRebuildPending{};
+
+		// Holster diagnostics (game thread only): why the frame loop skipped,
+		// last reported per hand, and a heartbeat every kHeartbeatSeconds.
+		enum class FrameSkip : std::uint8_t { kNone, kNoPlayer, kNoRoot, kNoFirstPersonSkeleton, kBoneTreeInit };
+		FrameSkip s_tracedFrameSkip{ FrameSkip::kNone };
+		constexpr float kHeartbeatSeconds = 10.0F;
+		float s_heartbeatElapsed{};
+		std::uint32_t s_heartbeatFrames{};
+		std::uint32_t s_heartbeatZoneFrames[2]{};
+		std::uint32_t s_tracedButtonSource[2]{ 0xFFFFFFFFu, 0xFFFFFFFFu };
+
+		[[nodiscard]] const char* FrameSkipName(const FrameSkip skip) noexcept
+		{
+			switch (skip) {
+			case FrameSkip::kNone: return "none";
+			case FrameSkip::kNoPlayer: return "no-player";
+			case FrameSkip::kNoRoot: return "no-third-person-root";
+			case FrameSkip::kNoFirstPersonSkeleton: return "no-first-person-skeleton";
+			case FrameSkip::kBoneTreeInit: return "bone-tree-init-failed";
+			}
+			return "?";
+		}
+
+		// Local wall-clock stamp for the holster trace (the log has none).
+		struct TraceStamp
+		{
+			char text[16]{};
+			TraceStamp() noexcept
+			{
+				SYSTEMTIME now{};
+				GetLocalTime(&now);
+				std::snprintf(text, sizeof(text), "%02u:%02u:%02u.%03u",
+					now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+			}
+		};
+
+		void TraceFrameSkip(const FrameSkip skip) noexcept
+		{
+			if (skip != s_tracedFrameSkip) {
+				_MESSAGE("[%s] Holster frame %s: reason=%s", TraceStamp().text,
+					skip == FrameSkip::kNone ? "resumed" : "skipped", FrameSkipName(skip));
+				s_tracedFrameSkip = skip;
+			}
+		}
+
 		[[nodiscard]] const char* GesturePhaseName(const Interaction::GesturePhase phase) noexcept
 		{
 			switch (phase) {
@@ -1619,7 +1672,10 @@ namespace Holsters {
 			boneTreeMap.insert({ rt->transforms[i].name.c_str(), i });
 			boneTreeVec.push_back(rt->transforms[i].name.c_str());
 		}
-		_MESSAGE("BoneTree Init Completed");
+		s_resolvedRoot = (*g_player)->unkF0->rootNode;
+		s_resolvedBoneTree = rt;
+		s_resolvedTransforms = rt->numTransforms;
+		_MESSAGE("BoneTree Init Completed: root=%p tree=%p", s_resolvedRoot, s_resolvedBoneTree);
 		return true;
 	}
 
@@ -1635,18 +1691,33 @@ namespace Holsters {
 			!(*g_player)->unkF0 ||
 			!(*g_player)->unkF0->rootNode ||
 			!(*g_player)->firstPersonSkeleton) {
+			TraceFrameSkip(!(*g_player) ? FrameSkip::kNoPlayer :
+				(!(*g_player)->unkF0 || !(*g_player)->unkF0->rootNode) ? FrameSkip::kNoRoot :
+				FrameSkip::kNoFirstPersonSkeleton);
 			resetInteractionState();
 			return;
 		}
 		if ((*g_player)->unkF0 && (*g_player)->unkF0->rootNode && (*g_player)->firstPersonSkeleton != nullptr) {
 			if (initBoneTreeFlag) {
 				if (!initBoneTree()) {
+					TraceFrameSkip(FrameSkip::kBoneTreeInit);
 					resetInteractionState();
 					return;
 				}
 				initBoneTreeFlag = false;
+				s_skeletonRebuildPending = false;
 				PlayerLoaded();
+			} else if (s_skeletonRebuildPending) {
+				// The player's skeleton was rebuilt under the holsters: resolve
+				// bones and displays again, the same rebuild a power armor
+				// change runs. Logged every time it runs.
+				s_skeletonRebuildPending = false;
+				_MESSAGE("[%s] Holster skeleton rebuild: holster bones and weapon displays resolved again",
+					TraceStamp().text);
+				resetInteractionState();
+				weaponsPAChange();
 			}
+			TraceFrameSkip(FrameSkip::kNone);
 			const auto now = Clock::now();
 			s_frameSeconds = s_lastFrame == Clock::time_point{} ? 0.0F :
 				(std::min)(0.1F, std::chrono::duration<float>(now - s_lastFrame).count());
@@ -1991,8 +2062,8 @@ namespace Holsters {
 				if (held != hand.heldLastFrame) {
 					char placement[384];
 					FormatNearestPlacement(hand.nearestSlot, hand.position, placement, sizeof(placement));
-					_MESSAGE("Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d%s",
-						held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.nearestSlot,
+					_MESSAGE("[%s] Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d%s",
+						TraceStamp().text, held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.nearestSlot,
 						hand.nearestDistance, hand.nearestRadius, static_cast<unsigned>(hand.zoneSamples),
 						GesturePhaseName(before), GesturePhaseName(after), GestureActionName(decision.Kind()),
 						facts.holds, facts.grips, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
@@ -2006,6 +2077,56 @@ namespace Holsters {
 			};
 			traceHand(s_leftHand, true, leftHolsterHeld, leftPhaseBefore, leftDecision, leftFacts);
 			traceHand(s_rightHand, false, rightHolsterHeld, rightPhaseBefore, rightDecision, rightFacts);
+
+			// Where each hand's holster button state comes from: ROCK's raw
+			// read, or the game's controller read (which ROCK blanks for a
+			// button it owns) when the raw read fails. Logged on change.
+			Rock::RawButtonRead buttonReads[2]{};
+			if (Rock::IsBound()) {
+				for (int index = 0; index < 2; ++index) {
+					const bool isLeft = index == 0;
+					const auto read = Rock::ReadRawButtonDetail(isLeft, static_cast<std::uint32_t>(c_holsterButtonID));
+					buttonReads[index] = read;
+					const std::uint32_t source = !read.owner ? 0x100u :
+						(static_cast<std::uint32_t>(read.status & 0xFF) << 4) | (read.available ? 0x8u : 0u) | (read.reason & 0x7u);
+					if (source != s_tracedButtonSource[index]) {
+						_MESSAGE("[%s] Holster button read for the %s hand: source=%s owner=%d status=%d available=%d reason=%u rawHeld=%d gameHeld=%d",
+							TraceStamp().text, isLeft ? "left" : "right",
+							read.owner && read.status == 0 && read.available ? "rock-raw" : "game",
+							read.owner ? 1 : 0, read.status, read.available ? 1 : 0, read.reason, read.held ? 1 : 0,
+							((isLeft ? leftController.ulButtonPressed : rightController.ulButtonPressed) & holsterButtonMask) != 0 ? 1 : 0);
+						s_tracedButtonSource[index] = source;
+					}
+				}
+			}
+
+			// Heartbeat: proves the loop runs and shows, every few seconds,
+			// what a dead holster would hide (zones never entered, the button
+			// never seen, ROCK inactive, the skeleton the zones follow).
+			++s_heartbeatFrames;
+			if (s_leftHand.zone != Interaction::kNoSlot) {
+				++s_heartbeatZoneFrames[0];
+			}
+			if (s_rightHand.zone != Interaction::kNoSlot) {
+				++s_heartbeatZoneFrames[1];
+			}
+			s_heartbeatElapsed += s_frameSeconds;
+			if (s_heartbeatElapsed >= kHeartbeatSeconds) {
+				const void* currentRoot = (*g_player)->unkF0 ? (*g_player)->unkF0->rootNode : nullptr;
+				_MESSAGE("[%s] Holster heartbeat: frames=%u zoneFrames L=%u R=%u rock bound=%d active=%d gates=0x%02X root=%p resolvedRoot=%p tree=%p transforms=%d holsters=%u L[anchor=%d nearest=%u dist=%.1f radius=%.1f held=%d raw=%d/%d/%u phase=%s holds=%d canReceive=%d] R[anchor=%d nearest=%u dist=%.1f radius=%.1f held=%d raw=%d/%d/%u phase=%s holds=%d canReceive=%d]",
+					TraceStamp().text, s_heartbeatFrames, s_heartbeatZoneFrames[0], s_heartbeatZoneFrames[1],
+					Rock::IsBound() ? 1 : 0, Rock::IsActive() ? 1 : 0, inputGates, currentRoot, s_resolvedRoot,
+					s_resolvedBoneTree, s_resolvedTransforms, static_cast<unsigned>(HolsterRegisteredObjects.size()),
+					s_leftHand.anchorAvailable ? 1 : 0, s_leftHand.nearestSlot, s_leftHand.nearestDistance, s_leftHand.nearestRadius,
+					leftHolsterHeld ? 1 : 0, buttonReads[0].status, buttonReads[0].available ? 1 : 0, buttonReads[0].reason,
+					GesturePhaseName(s_leftHand.gesture.Phase()), leftFacts.holds ? 1 : 0, leftFacts.canReceive ? 1 : 0,
+					s_rightHand.anchorAvailable ? 1 : 0, s_rightHand.nearestSlot, s_rightHand.nearestDistance, s_rightHand.nearestRadius,
+					rightHolsterHeld ? 1 : 0, buttonReads[1].status, buttonReads[1].available ? 1 : 0, buttonReads[1].reason,
+					GesturePhaseName(s_rightHand.gesture.Phase()), rightFacts.holds ? 1 : 0, rightFacts.canReceive ? 1 : 0);
+				s_heartbeatElapsed = 0.0F;
+				s_heartbeatFrames = 0;
+				s_heartbeatZoneFrames[0] = s_heartbeatZoneFrames[1] = 0;
+			}
 
 			SetActivationSuppressed(
 				c_ActivationDisabled &&
@@ -3405,6 +3526,21 @@ namespace Holsters {
 		auto* boneTree =
 			reinterpret_cast<BSFlattenedBoneTree*>(treeNode);
 		if (!boneTree) {
+			ClearHandContacts();
+			return;
+		}
+		// A different root or tree than the holsters were resolved from: the
+		// holster bones and boneTreeMap indices belong to the old skeleton,
+		// so no zone can be reached until they are resolved again.
+		const void* root = (*g_player)->unkF0->rootNode;
+		if (s_resolvedBoneTree && (root != s_resolvedRoot || boneTree != s_resolvedBoneTree)) {
+			_MESSAGE("[%s] Holster skeleton changed: root %p->%p tree %p->%p transforms %d->%d",
+				TraceStamp().text, s_resolvedRoot, root, s_resolvedBoneTree,
+				static_cast<const void*>(boneTree), s_resolvedTransforms, boneTree->numTransforms);
+			s_resolvedRoot = root;
+			s_resolvedBoneTree = boneTree;
+			s_resolvedTransforms = boneTree->numTransforms;
+			s_skeletonRebuildPending = true;
 			ClearHandContacts();
 			return;
 		}

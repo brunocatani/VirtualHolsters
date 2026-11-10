@@ -115,6 +115,18 @@ namespace Holsters::Rock
 	// bound the holster button is read here. False when ROCK has no sample.
 	bool ReadRawButton(bool isLeft, std::uint32_t buttonId, bool& held) noexcept;
 
+	// The same read with why it failed, for the holster button trace:
+	// status is ROCK's api::Status, reason its InputAvailabilityReason.
+	struct RawButtonRead
+	{
+		bool owner{};
+		std::int32_t status{ -1 };
+		bool available{};
+		std::uint32_t reason{};
+		bool held{};
+	};
+	[[nodiscard]] RawButtonRead ReadRawButtonDetail(bool isLeft, std::uint32_t buttonId) noexcept;
+
 	// The OpenVR buttons this mod can reserve in ROCK (menu, grip, A/X,
 	// stick/pad press, trigger).
 	inline constexpr std::uint64_t kReservableButtons =
