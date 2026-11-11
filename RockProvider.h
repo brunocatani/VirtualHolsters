@@ -106,6 +106,11 @@ namespace Holsters::Rock
 		std::uint32_t formId,
 		std::uint32_t stackIndex,
 		std::uint64_t& outCommand) noexcept;
+	// Where the stand-in of that draw is shown this frame (ROCK
+	// setInventoryDrawPose), so the real weapon continues from there when
+	// ROCK reveals it. False once ROCK has revealed the weapon or the command
+	// is not a pending firearm draw.
+	bool ReportDrawPose(std::uint64_t command, const WeaponWorld& world) noexcept;
 	// On success, outWeaponSlot names the slot ROCK equipped the weapon into.
 	[[nodiscard]] EquipProgress PollEquip(std::uint64_t command, std::uint32_t* outWeaponSlot = nullptr) noexcept;
 	void CancelEquip(std::uint64_t command) noexcept;

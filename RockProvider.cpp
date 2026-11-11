@@ -532,6 +532,22 @@ namespace Holsters::Rock
 		}
 	}
 
+	bool ReportDrawPose(const std::uint64_t command, const WeaponWorld& world) noexcept
+	{
+		if (!command || !s_state.active) {
+			return false;
+		}
+		api::Transform pose{};
+		for (std::size_t i = 0; i < 9; ++i) {
+			pose.rotate[i] = world.rotate[i];
+		}
+		for (std::size_t i = 0; i < 3; ++i) {
+			pose.translate[i] = world.translate[i];
+		}
+		pose.scale = world.scale;
+		return s_state.weapon->setInventoryDrawPose(s_state.client.owner(), command, &pose) == api::Status::Ok;
+	}
+
 	EquipProgress PollEquip(const std::uint64_t command, std::uint32_t* const outWeaponSlot) noexcept
 	{
 		if (!command || !s_state.weapon || !s_state.client.owner()) {

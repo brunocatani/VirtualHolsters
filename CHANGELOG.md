@@ -17,7 +17,7 @@ Everything below changed since CylonSurfer's last upstream commit, "Added additi
 - **Draw:** with a free hand inside a holster that holds a weapon, press the holster button. The weapon comes out on the press.
 - **Holster:** with a weapon in the hand, release the holster button inside an empty holster.
 - **Swap:** release inside a holster that already holds a weapon. The hand's weapon goes in and the holstered one comes out.
-- The weapon shown in the holster moves into the hand at once and stands in for the real weapon until the game has equipped it, so the weapon never disappears during a draw. With ROCK, the stand-in sits at ROCK's firing grip position for that hand.
+- The weapon shown in the holster moves into the hand at once and stands in for the real weapon until the game has equipped it, so the weapon never disappears during a draw. With ROCK, the stand-in eases from the holster to ROCK's firing grip position for that hand, and the real weapon continues from wherever the stand-in is when ROCK shows it, so a gun travels from the holster into the hand instead of appearing in the grip.
 - A weapon held in both hands is never holstered. Letting go of either hand inside a holster only lets go and never draws. A two-handed weapon held by one hand behaves like a one-handed weapon.
 - A drawn weapon fires while the grip that drew it is still held.
 - With ROCK, every holstered gun's animations stay loaded, so a draw does not wait on the game's first-use load.

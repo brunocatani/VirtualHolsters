@@ -414,6 +414,9 @@ namespace Holsters {
 			MyWeapon* clone{};
 			UInt32 formId{};
 			Clock::time_point deadline{};
+			// The draw's ROCK command: the stand-in's pose is reported under
+			// it until ROCK reveals the weapon.
+			std::uint64_t command{};
 			// A second weapon is in a hand's role only once its grip holds
 			// that hand, which can follow its presentation; its slot from the
 			// equip result is checked directly.
@@ -515,6 +518,16 @@ namespace Holsters {
 			local.scale = world.scale * inverseScale;
 			return std::isfinite(local.pos.x) && std::isfinite(local.pos.y) &&
 				std::isfinite(local.pos.z) && std::isfinite(local.scale);
+		}
+
+		// The world transform of a child of `parent` placed at `local`.
+		NiTransform WorldFromLocal(const NiTransform& parent, const NiTransform& local) noexcept
+		{
+			NiTransform world{};
+			world.rot = MultiplyStored(local.rot, parent.rot);
+			world.pos = LocalPointToWorld(parent, local.pos);
+			world.scale = parent.scale * local.scale;
+			return world;
 		}
 
 		NiPoint3 WorldPointToLocal(const NiTransform& parent, const NiPoint3& world) noexcept
@@ -1169,6 +1182,7 @@ namespace Holsters {
 			handoff.clone = transfer.inHand;
 			handoff.formId = transfer.formId;
 			handoff.deadline = Clock::now() + kRevealWait;
+			handoff.command = transfer.command;
 			handoff.weaponSlot = transfer.weaponSlot;
 			handoff.weaponSlotKnown = transfer.weaponSlotKnown;
 			transfer.inHand = nullptr;
@@ -1522,12 +1536,15 @@ namespace Holsters {
 		}
 
 		// A drawn firearm stand-in eases from where it was grabbed into ROCK's
-		// firing aim for the hand, then keeps following it, so it is exactly
-		// where ROCK reveals the real weapon. Without an aim it holds still.
-		void AdvanceStandIn(MyWeapon& weapon, const bool isLeft)
+		// firing aim for the hand, then keeps following it. Without an aim it
+		// holds still. ROCK usually reveals the real weapon before the ease
+		// ends, so each frame tells ROCK where the stand-in is and the real
+		// weapon continues from there instead of appearing at the aim.
+		void AdvanceStandIn(MyWeapon& weapon, const bool isLeft, const std::uint64_t command)
 		{
 			NiNode* hand = HandNode(isLeft);
 			Rock::WeaponWorld aim{};
+			bool placed = false;
 			if (weapon.followsAim && weapon.WeapMesh && hand && Rock::GetFiringAimWorld(isLeft, aim)) {
 				NiTransform world{};
 				for (int row = 0; row < 3; ++row) {
@@ -1544,11 +1561,27 @@ namespace Holsters {
 					weapon.blendTo = local;
 					if (!weapon.blending) {
 						weapon.WeapMesh->m_localTransform = local;
-						return;
+						placed = true;
 					}
 				}
 			}
-			AdvanceBlend(weapon);
+			if (!placed) {
+				AdvanceBlend(weapon);
+			}
+			if (command && weapon.followsAim && weapon.WeapMesh && hand && (weapon.WeapMesh->flags & 0x1) == 0) {
+				const NiTransform world = WorldFromLocal(hand->m_worldTransform, weapon.WeapMesh->m_localTransform);
+				Rock::WeaponWorld shown{};
+				for (int row = 0; row < 3; ++row) {
+					for (int column = 0; column < 3; ++column) {
+						shown.rotate[row * 3 + column] = world.rot.data[row][column];
+					}
+				}
+				shown.translate[0] = world.pos.x;
+				shown.translate[1] = world.pos.y;
+				shown.translate[2] = world.pos.z;
+				shown.scale = world.scale;
+				(void)Rock::ReportDrawPose(command, shown);
+			}
 		}
 
 		void UpdateWeaponBlends()
@@ -1564,12 +1597,12 @@ namespace Holsters {
 					AdvanceBlend(*transfer.outgoing);
 				}
 				if (transfer.inHand) {
-					AdvanceStandIn(*transfer.inHand, transfer.isLeft);
+					AdvanceStandIn(*transfer.inHand, transfer.isLeft, transfer.requested ? transfer.command : 0);
 				}
 			}
 			for (int index = 0; index < 2; ++index) {
 				if (s_handoffs[index].clone) {
-					AdvanceStandIn(*s_handoffs[index].clone, index == 1);
+					AdvanceStandIn(*s_handoffs[index].clone, index == 1, s_handoffs[index].command);
 				}
 			}
 		}
