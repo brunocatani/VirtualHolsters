@@ -32,6 +32,7 @@ Everything below changed since CylonSurfer's upstream commit "Added additions to
 - **KabutoVR:** no draw while KabutoVR reports the hand at the head, holding a helmet or equipping one.
 - Config mode opens on a double press of the config button (within 0.3 seconds), so a single stick click in a holster no longer opens it.
 - No holster action while the scope view is up.
+- The shoulder holster zones can be moved and resized in config mode like the others. They stay attached to the head node (upstream moves them to the chest bone, which needs new default offsets).
 - `AddHolster` in `VirtualHolstersAPI.h` takes upstream 3.1's form, `AddHolster(holsterIndex, weaponRef)`: the weapon world reference goes into the inventory and the empty holster.
 - Fixes: holster orb mesh names, a leaked file search handle, config-mode moves and rotations on an empty slot, the config save message (hidden on the game thread instead of a detached thread), and config-mode tile state reset on exit for all twelve tiles.
 

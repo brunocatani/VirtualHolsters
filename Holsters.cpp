@@ -3488,11 +3488,16 @@ namespace Holsters {
 		}
 	}
 
+	// A shoulder zone hangs off HmdNode, whose axes are the same for both
+	// shoulders and in power armor (x right, y forward, z up), unlike the
+	// shoulder weapon displays on the collarbones: the sticks move it
+	// straight along those axes.
+	bool IsShoulderZoneEdit() {
+		return configMode == 1 && (gCurHolster == 1 || gCurHolster == 2);
+	}
+
 	void scaleHolster() {
 		if (configMode == 1) {
-			if (gCurHolster == 1 || gCurHolster == 2) {
-				return;
-			}
 			MyHolster* holster = SlotHolster(gCurHolster);
 			if (holster && holster->debugSphere) {
 				NiNode* hol = holster->debugSphere;
@@ -3515,7 +3520,7 @@ namespace Holsters {
 		bool isMelee = false;
 		MyHolster* holster = SlotHolster(gCurHolster);
 		if (configMode == 1) {
-			if (gCurHolster == 1 || gCurHolster == 2 || !holster) {
+			if (!holster) {
 				return;
 			}
 			hol = holster->debugSphere;
@@ -3534,7 +3539,15 @@ namespace Holsters {
 		{
 			float nLoc;
 			float origLoc;
-			if (gCurHolster == 1) {
+			if (IsShoulderZoneEdit()) {
+				nLoc = rAxisOffsetX;
+				origLoc = hol->m_localTransform.pos.x;
+				if ((origLoc + nLoc) > 50 || (origLoc + nLoc) < -50) {
+					return;
+				}
+				hol->m_localTransform.pos.x = (origLoc + nLoc);
+			}
+			else if (gCurHolster == 1) {
 				bool isInPA = detectInPowerArmor();
 				isInPA ? nLoc = rAxisOffsetX : nLoc = rAxisOffsetX * -1;
 				isInPA ? origLoc = hol->m_localTransform.pos.z : origLoc = hol->m_localTransform.pos.x;
@@ -3614,7 +3627,7 @@ namespace Holsters {
 		bool isMelee = false;
 		MyHolster* holster = SlotHolster(gCurHolster);
 		if (configMode == 1) {
-			if (gCurHolster == 1 || gCurHolster == 2 || !holster) {
+			if (!holster) {
 				return;
 			}
 			hol = holster->debugSphere;
@@ -3666,7 +3679,7 @@ namespace Holsters {
 		NiNode* hol = nullptr;
 		MyHolster* holster = SlotHolster(gCurHolster);
 		if (configMode == 1) {
-			if (gCurHolster == 1 || gCurHolster == 2 || !holster) {
+			if (!holster) {
 				return;
 			}
 			hol = holster->debugSphere;
@@ -3683,7 +3696,15 @@ namespace Holsters {
 		}
 		float nLoc;
 		float origLoc;
-		if (gCurHolster == 1) {
+		if (IsShoulderZoneEdit()) {
+			nLoc = lAxisOffsetX;
+			origLoc = hol->m_localTransform.pos.z;
+			if ((origLoc + nLoc) > 50 || (origLoc + nLoc) < -50) {
+				return;
+			}
+			hol->m_localTransform.pos.z = (origLoc + nLoc);
+		}
+		else if (gCurHolster == 1) {
 			bool isInPA = detectInPowerArmor();
 			isInPA ? nLoc = lAxisOffsetX : nLoc = lAxisOffsetX;
 			isInPA ? origLoc = hol->m_localTransform.pos.x : origLoc = hol->m_localTransform.pos.z;
