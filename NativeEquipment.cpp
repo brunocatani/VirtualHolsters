@@ -2,8 +2,11 @@
 
 #include <F4SE/F4SE.h>
 #include <RE/Bethesda/Actor.h>
+#include <RE/Bethesda/FormUtil.h>
 #include <RE/Bethesda/PlayerCharacter.h>
 #include <RE/Bethesda/Settings.h>
+#include <RE/Bethesda/TESForms.h>
+#include <RE/Bethesda/TESObjectREFRs.h>
 #include <RE/NetImmerse/NiNode.h>
 
 #include <cstdio>
@@ -124,5 +127,16 @@ namespace Holsters::NativeEquipment
 		const std::uintptr_t offset = (isLeft == leftHanded) ? 0x6F0 : 0x768;
 		auto* node = *reinterpret_cast<RE::NiNode**>(reinterpret_cast<std::uintptr_t>(player) + offset);
 		return node && node->parent ? node : nullptr;
+	}
+
+	bool PickUpReference(const std::uint32_t referenceFormId) noexcept
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* reference = referenceFormId ? RE::TESForm::GetFormByID<RE::TESObjectREFR>(referenceFormId) : nullptr;
+		if (!player || !reference || reference->GetFormType() != RE::ENUM_FORM_ID::kREFR ||
+			reference->IsDeleted() || !reference->GetObjectReference()) {
+			return false;
+		}
+		return reference->ActivateRef(player, nullptr, 1, false, false, false);
 	}
 }

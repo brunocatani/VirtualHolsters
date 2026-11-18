@@ -28,4 +28,9 @@ namespace Holsters::NativeEquipment
 	// weapon in. The hand bone is not: it moves between an open hand and a
 	// grip. Borrowed engine NiNode; null when unavailable.
 	[[nodiscard]] void* WandNode(bool isLeft) noexcept;
+
+	// Takes one world reference into the player's inventory through the
+	// engine's own activation (TESObjectREFR::ActivateRef with the player),
+	// as ROCK's shoulder stash does. False when it is gone or refused.
+	[[nodiscard]] bool PickUpReference(std::uint32_t referenceFormId) noexcept;
 }

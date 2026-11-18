@@ -30,5 +30,4 @@ namespace Holsters {
 	void UITile10Function();
 	void UITile11Function();
 	void UITile12Function();
-	void UISaveMSGTimer();
 }

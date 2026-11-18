@@ -78,6 +78,33 @@ namespace Holsters::Rock
 	// surface, so ROCK would refuse to equip into it.
 	[[nodiscard]] bool HandBusyWithObject(bool isLeft) noexcept;
 
+	// A loose world object the hand holds through a ROCK grab (not its
+	// equipped weapon): the reference and the grab that holds it.
+	struct LooseHold
+	{
+		std::uint32_t referenceFormId{};
+		std::uint64_t gripSequence{};
+		std::uint32_t worldGeneration{};
+		std::uint32_t skeletonGeneration{};
+		std::uint32_t providerGeneration{};
+	};
+	[[nodiscard]] bool GetLooseHold(bool isLeft, LooseHold& out) noexcept;
+
+	// Holster deposit of a held loose object through ROCK Storage. Claim it
+	// every frame while the hand holding it is in an empty holster (ROCK
+	// renews the same lease); after ROCK lets go, commit, and only on kOk
+	// take the item. kBusy: ROCK still holds or hands it off; retry.
+	[[nodiscard]] Result ClaimHeld(bool isLeft, const LooseHold& hold, std::uint64_t& outLease) noexcept;
+	[[nodiscard]] Result CommitClaim(std::uint64_t lease) noexcept;
+	void ReleaseClaim(std::uint64_t lease) noexcept;
+
+	// Puts one inventory item of baseFormId into the hand as a ROCK grab
+	// (Grab 2.1 inventory item grab): a holstered throwable's draw. Poll
+	// with PollItemGrab, which reports kPending, kSucceeded or kFailed.
+	[[nodiscard]] Result RequestItemGrab(bool isLeft, std::uint32_t baseFormId, std::uint64_t& outCommand) noexcept;
+	[[nodiscard]] EquipProgress PollItemGrab(std::uint64_t command) noexcept;
+	void CancelItemGrab(std::uint64_t command) noexcept;
+
 	// An inventory weapon by base form and inventory stack index.
 	struct WarmWeapon
 	{

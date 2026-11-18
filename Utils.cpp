@@ -225,6 +225,7 @@ namespace Holsters {
 			{
 				filenames.push_back(search_data.cFileName);
 			} while (FindNextFileA(handle, &search_data));
+			FindClose(handle);
 		}
 		return filenames;
 	}

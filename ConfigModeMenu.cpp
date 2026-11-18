@@ -8,7 +8,16 @@
 #include "VRSceneGraph.h"
 #include "f4se/GameReferences.h"
 
+#include <chrono>
+
 namespace Holsters {
+	namespace {
+		// The save message hides on the frame thread (updateUIInfo) once this
+		// passes; the scene graph is never touched from another thread.
+		constexpr auto kSaveMessageSeconds = std::chrono::milliseconds(1500);
+		std::chrono::steady_clock::time_point s_saveMessageHideAt{};
+	}
+
 	char* mUI_Nodes[12] = {"Data/Meshes/VRH/UI-NODE01_LSWAP.nif", "Data/Meshes/VRH/UI-NODE02_HAPTICS.nif", "Data/Meshes/VRH/UI-NODE03_MODE.nif", "Data/Meshes/VRH/UI-NODE04_SVIS.nif", "Data/Meshes/VRH/UI-NODE05_WVIS.nif", "Data/Meshes/VRH/UI-NODE06_NEXT.nif", "Data/Meshes/VRH/UI-NODE07_RSWAP.nif", "Data/Meshes/VRH/UI-NODE08_ART.nif", "Data/Meshes/VRH/UI-NODE09_SAVE.nif", "Data/Meshes/VRH/UI-NODE10_RETURN.nif", "Data/Meshes/VRH/UI-NODE11_HELP.nif", "Data/Meshes/VRH/UI-NODE12_ACTIVATE.nif" };
 	char* mUI_Tiles[12] = { "Data/Meshes/VRH/UI-TILE01_LSWAP.nif", "Data/Meshes/VRH/UI-TILE02_HAPTICS.nif", "Data/Meshes/VRH/UI-TILE03_MODE.nif", "Data/Meshes/VRH/UI-TILE04_SVIS.nif", "Data/Meshes/VRH/UI-TILE05_WVIS.nif", "Data/Meshes/VRH/UI-TILE06_NEXT.nif", "Data/Meshes/VRH/UI-TILE07_RSWAP.nif", "Data/Meshes/VRH/UI-TILE08_ART.nif", "Data/Meshes/VRH/UI-TILE09_SAVE.nif", "Data/Meshes/VRH/UI-TILE10_RETURN.nif", "Data/Meshes/VRH/UI-TILE11_HELP.nif", "Data/Meshes/VRH/UI-TILE12_ACTIVATE.nif" };
 	char* mUI_Info_Holster[8] = { "none", "Data/Meshes/VRH/UI-INFO_HOLSTER01.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER02.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER03.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER04.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER05.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER06.nif", "Data/Meshes/VRH/UI-INFO_HOLSTER07.nif" };
@@ -245,7 +254,8 @@ namespace Holsters {
 		BSFixedString nodename;
 		NiNode* boneNode = nullptr;
 		// Restore Arrays & Variables to nullptr
-		for (int i = 0; i <= 9; i++) {
+		s_saveMessageHideAt = {};
+		for (int i = 0; i < 12; i++) {
 			niUI_Nodes[i] = nullptr;
 			niUI_Tiles[i] = nullptr;
 			bUITilePressed[i] = false;
@@ -553,6 +563,14 @@ namespace Holsters {
 	}
 
 	void updateUIInfo() {
+		if (s_saveMessageHideAt != std::chrono::steady_clock::time_point{} &&
+			std::chrono::steady_clock::now() >= s_saveMessageHideAt) {
+			s_saveMessageHideAt = {};
+			if (UISaveMSG != nullptr) {
+				UISaveMSG->flags |= 0x1;
+				UISaveMSG->m_localTransform.scale = 0;
+			}
+		}
 		NiCloneProcess proc;
 		proc.unk18 = Offsets::cloneAddr1;
 		proc.unk48 = Offsets::cloneAddr2;
@@ -884,15 +902,12 @@ namespace Holsters {
 				VRSceneGraph::AttachChild(UIMain, UISaveMSG, true);
 				UISaveMSG->flags &= 0xfffffffffffffffe;
 			}
-			std::thread t1(UISaveMSGTimer);
-			t1.detach();
 		}
 		else {
 			UISaveMSG->flags &= 0xfffffffffffffffe;
 			UISaveMSG->m_localTransform.scale = 1;
-			std::thread t1(UISaveMSGTimer);
-			t1.detach();
 		}
+		s_saveMessageHideAt = std::chrono::steady_clock::now() + kSaveMessageSeconds;
 	}
 
 	void UITile11Function() {
@@ -934,13 +949,5 @@ namespace Holsters {
 			c_ActivationDisabled = true;
 		}
 		ActivationToggle();
-	}
-
-	void UISaveMSGTimer() {
-		Sleep(1500);
-		if (UISaveMSG != nullptr) {
-			UISaveMSG->flags |= 0x1;
-			UISaveMSG->m_localTransform.scale = 0;
-		}
 	}
 }

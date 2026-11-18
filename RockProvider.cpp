@@ -148,7 +148,7 @@ namespace Holsters::Rock
 			}
 			if (status == Status::Ok) {
 				status = s_state.client.acquire(
-					bits(grab::Permission::Read), s_state.grab);
+					bits(grab::Permission::Read, grab::Permission::Write), s_state.grab);
 			}
 			if (status == Status::Ok) {
 				status = s_state.client.acquire(
@@ -455,6 +455,146 @@ namespace Holsters::Rock
 		return has(Flag::LooseObject) || has(Flag::LooseWeapon) || has(Flag::TouchGrab) ||
 			has(Flag::FixedSurfaceLatch) || has(Flag::GlobalSurfaceLatch) ||
 			state.phase == Phase::Pulling || state.phase == Phase::Catching;
+	}
+
+	bool GetLooseHold(const bool isLeft, LooseHold& out) noexcept
+	{
+		out = {};
+		if (!s_state.active) {
+			return false;
+		}
+		api::grab::HandInteractionState state{};
+		if (s_state.grab->getHandInteractionState(s_state.client.owner(), ToHand(isLeft), &state) != api::Status::Ok) {
+			return false;
+		}
+		using Flag = api::grab::HandInteractionFlag;
+		const auto has = [&](const Flag flag) { return (state.flags & static_cast<std::uint32_t>(flag)) != 0; };
+		if (!has(Flag::Valid) || state.phase != api::grab::HandInteractionPhase::Holding ||
+			!(has(Flag::LooseObject) || has(Flag::LooseWeapon)) || !state.targetFormId) {
+			return false;
+		}
+		out.referenceFormId = state.targetFormId;
+		out.gripSequence = state.gripSequence;
+		out.worldGeneration = state.worldGeneration;
+		out.skeletonGeneration = state.skeletonGeneration;
+		out.providerGeneration = state.providerGeneration;
+		return true;
+	}
+
+	Result ClaimHeld(const bool isLeft, const LooseHold& hold, std::uint64_t& outLease) noexcept
+	{
+		outLease = 0;
+		if (!s_state.active || !hold.referenceFormId) {
+			return Result::kUnavailable;
+		}
+		api::storage::Target target{};
+		target.reference.referenceFormId = hold.referenceFormId;
+		target.reference.worldGeneration = hold.worldGeneration;
+		target.reference.skeletonGeneration = hold.skeletonGeneration;
+		target.reference.providerGeneration = hold.providerGeneration;
+		target.hand = ToHand(isLeft);
+		target.gripSequence = hold.gripSequence;
+		const auto status = s_state.storage->claim(s_state.client.owner(), &target, &outLease);
+		switch (status) {
+		case api::Status::Ok:
+			return Result::kOk;
+		case api::Status::NotReady:
+		case api::Status::GenerationMismatch:
+		case api::Status::TargetUnavailable:
+			// The grab changed under the sample; the next frame claims again.
+			return Result::kBusy;
+		default:
+			LogStatus("storage claim", status);
+			return Result::kRefused;
+		}
+	}
+
+	Result CommitClaim(const std::uint64_t lease) noexcept
+	{
+		if (!lease || !s_state.client.owner() || !s_state.storage) {
+			return Result::kUnavailable;
+		}
+		const auto status = s_state.storage->commit(s_state.client.owner(), lease);
+		switch (status) {
+		case api::Status::Ok:
+			return Result::kOk;
+		case api::Status::Busy:
+		case api::Status::NotReady:
+		case api::Status::ObjectAlreadyOwned:
+			// ROCK still holds the object or hands it off this frame.
+			return Result::kBusy;
+		default:
+			LogStatus("storage commit", status);
+			return Result::kRefused;
+		}
+	}
+
+	void ReleaseClaim(const std::uint64_t lease) noexcept
+	{
+		if (lease && s_state.client.owner() && s_state.storage) {
+			(void)s_state.storage->release(s_state.client.owner(), lease);
+		}
+	}
+
+	Result RequestItemGrab(const bool isLeft, const std::uint32_t baseFormId, std::uint64_t& outCommand) noexcept
+	{
+		outCommand = 0;
+		if (!s_state.active || !baseFormId) {
+			return Result::kUnavailable;
+		}
+		api::grab::InventoryItemGrabRequest request{};
+		request.hand = ToHand(isLeft);
+		request.baseFormId = baseFormId;
+		const auto status = s_state.grab->requestInventoryItemGrab(s_state.client.owner(), &request, &outCommand);
+		switch (status) {
+		case api::Status::Ok:
+		case api::Status::RequestQueued:
+			return Result::kQueued;
+		case api::Status::Busy:
+		case api::Status::NotReady:
+			outCommand = 0;
+			return Result::kBusy;
+		default:
+			LogStatus("inventory item grab", status);
+			outCommand = 0;
+			return Result::kRefused;
+		}
+	}
+
+	EquipProgress PollItemGrab(const std::uint64_t command) noexcept
+	{
+		if (!command || !s_state.grab || !s_state.client.owner()) {
+			return EquipProgress::kFailed;
+		}
+		api::grab::InteractionCommandResult result{};
+		if (s_state.grab->getInteractionCommandResult(s_state.client.owner(), command, &result) != api::Status::Ok) {
+			return EquipProgress::kFailed;
+		}
+		using State = api::grab::InteractionCommandState;
+		switch (result.state) {
+		case State::Succeeded:
+			return EquipProgress::kSucceeded;
+		case State::Rejected:
+		case State::Cancelled: {
+			char message[160]{};
+			if (std::snprintf(message, sizeof(message),
+					"VirtualHolsters: ROCK inventory item grab %llu ended state=%u failure=%u.",
+					static_cast<unsigned long long>(command), static_cast<unsigned>(result.state),
+					static_cast<unsigned>(result.failure)) > 0) {
+				LegacyBridge::LogError(message);
+			}
+			return EquipProgress::kFailed;
+		}
+		default:
+			return EquipProgress::kPending;
+		}
+	}
+
+	void CancelItemGrab(const std::uint64_t command) noexcept
+	{
+		if (command && s_state.grab && s_state.client.owner()) {
+			(void)s_state.grab->cancelInteractionCommand(s_state.client.owner(), command);
+		}
 	}
 
 	bool GetFiringAimWorld(const bool isLeft, WeaponWorld& out) noexcept

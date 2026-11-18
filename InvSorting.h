@@ -43,6 +43,12 @@ namespace Holsters {
 	bool NativeUnequip(const WeaponStack& stack);
 	bool NativeEquip(const WeaponStack& stack);
 	bool IsMeleeWeapon(TESObjectWEAP* weapon);
+	// Grenades and mines: weapons of the grenade equip slot, never a hand
+	// weapon. Only ROCK can put one from a holster into the hand.
+	bool IsThrowableWeapon(TESObjectWEAP* weapon);
+	// The tag a world reference's weapon gets once it is in the inventory:
+	// the same name StackName gives its stack.
+	void ReferenceTagName(TESObjectREFR* reference, std::string& name, UInt16& length);
 
 	// Holster visuals for stored weapons without an equipped model (load,
 	// power armor, armor changes): a temporary world reference whose 3D is
@@ -51,7 +57,6 @@ namespace Holsters {
 	void CancelStoredVisual(int handle);
 	void ServiceStoredVisuals();
 
-	void addHolster(int handle, std::string weapName, TESForm* baseForm, TESObjectREFR* object, bool isMeleeW);
 	ExtraTextDisplayData* FindHolster(BGSInventoryList* inventory);
 	void GameLoadInvSort();
 }

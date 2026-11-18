@@ -2,7 +2,7 @@
 
 ## Unreleased: FO4VR modernization fork
 
-Everything below changed since CylonSurfer's last upstream commit, "Added additions to API" (`31f98f2`).
+Everything below changed since CylonSurfer's upstream commit "Added additions to API" (`31f98f2`). The improvements of his next commit, "Added support for ROCK (enabled holstering of held weapons + grendades) and KabutoVR." (`ff9d233`), are carried over on this fork's own ROCK 1.0 binding; see "From upstream `ff9d233`" below.
 
 ### Requirements
 
@@ -24,6 +24,16 @@ Everything below changed since CylonSurfer's last upstream commit, "Added additi
 - In the shoulder holsters, ROCK's own shoulder stash is turned off for that hand.
 - Each holster slot can be switched off on its own: `[Holster Slots]` with `LeftShoulder`, `RightShoulder`, `LeftHip`, `RightHip`, `LowerBack`, `LeftChest`, `RightChest`.
 - Config mode keeps ROCK and the game off the buttons it uses.
+
+### From upstream `ff9d233`
+
+- **Loose weapons (ROCK):** let go of a loose weapon held through ROCK inside an empty holster and it goes into the inventory and that holster, through ROCK Storage's claim on the held reference. In a shoulder holster, ROCK's own shoulder stash does not take it.
+- **Grenades and mines (ROCK):** a throwable can be holstered the same way. Pressing the holster button in its holster puts one into the hand as a ROCK grab, and letting go throws it. The holster keeps its tag while any copy is left. Keeping that press in the holster for 1.5 seconds empties the holster. Without ROCK, throwables are never holstered.
+- **KabutoVR:** no draw while KabutoVR reports the hand at the head, holding a helmet or equipping one.
+- Config mode opens on a double press of the config button (within 0.3 seconds), so a single stick click in a holster no longer opens it.
+- No holster action while the scope view is up.
+- `AddHolster` in `VirtualHolstersAPI.h` takes upstream 3.1's form, `AddHolster(holsterIndex, weaponRef)`: the weapon world reference goes into the inventory and the empty holster.
+- Fixes: holster orb mesh names, a leaked file search handle, config-mode moves and rotations on an empty slot, the config save message (hidden on the game thread instead of a detached thread), and config-mode tile state reset on exit for all twelve tiles.
 
 ### Configuration files
 
@@ -74,7 +84,7 @@ Added:
 
 Removed: `VR.cpp/.h`, `VRHookAPI.h`, `VRManagerAPI.h`, `PapyrusVRAPI.h`, `PapyrusVRTypes.h`, `OpenVRTypes.h` (FO4VRTools), and `VirtualHolsters.sln`, `.vcxproj`, `.vcxproj.filters`, `.vscode` (old build).
 
-`VirtualHolstersAPI.h` changed in its description comment only; the API itself is unchanged.
+`VirtualHolstersAPI.h`: `AddHolster` has upstream 3.1's signature (see "From upstream `ff9d233`"); the rest of the API is unchanged. `KabutoAPI.h` is KabutoVR's consumer header, as upstream ships it.
 
 ### Where the code is
 

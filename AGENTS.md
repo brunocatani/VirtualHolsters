@@ -9,6 +9,7 @@ VirtualHolsters for Fallout 4 VR: weapons are holstered and drawn at body zones 
 - `HolsterInteraction.h`, `HolsterSlotPolicy.h`: the holster button gesture, zone selection and slot rules, free of engine types and unit tested.
 - `NativeEquipment`, `VRSceneGraph`, `VRHook`, `hook`, `LegacyBridge`, `ConfigPaths.h`: FO4VR, OpenVR and plugin-entry plumbing.
 - `InvSorting`, `ConfigModeMenu`, `weaponOffset`, `MenuChecker`, `VRHGameEvents`: inventory tags, config mode, weapon offsets, menus and game events.
+- `KabutoAPI.h`: KabutoVR's consumer header (upstream), read before a draw.
 - `PapyrusSource/`: the mod's Papyrus scripts. `tests/`: unit tests.
 
 ## Build and tests
@@ -24,7 +25,7 @@ VirtualHolsters for Fallout 4 VR: weapons are holstered and drawn at body zones 
 
 ## Invariants
 
-- VirtualHolsters works without ROCK. ROCK is an optional runtime provider bound through its public provider API major 2: the build reads only ROCK's public headers, never links ROCK and never includes its private sources. With ROCK loaded, hand weapon facts, hand-directed equip and unequip, input reservation and shoulder routing come from ROCK; without it the vanilla single-weapon path runs. ROCK has no VirtualHolsters-specific interface; this mod is only a ROCK consumer.
+- VirtualHolsters works without ROCK. ROCK is an optional runtime provider bound through its public provider API major 2: the build reads only ROCK's public headers, never links ROCK and never includes its private sources. With ROCK loaded, hand weapon facts, hand-directed equip and unequip, input reservation, shoulder routing, Storage claims on loose weapons released into a holster, and inventory-item grabs for holstered throwables come from ROCK; without it the vanilla single-weapon path runs and throwables are never holstered. ROCK has no VirtualHolsters-specific interface; this mod is only a ROCK consumer.
 - The Holsters runtime owns its OpenVR access, frame hook, zone detection, haptics, input filtering, inventory transitions, persistence and stored-weapon presentation.
 - A new hardcoded FO4VR address or vtable slot is checked against the live bytes before use and fails closed, as `hook.cpp` and `VRSceneGraph.cpp` do.
 - Tracked source and build configuration stay portable; machine-local dependency, SDK and deploy paths live only in ignored local configuration.

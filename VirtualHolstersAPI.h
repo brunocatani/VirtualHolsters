@@ -152,18 +152,16 @@ public:
     virtual void VH_CALL switchHandMode() const = 0;
 
     /**
-     * Add a grabbed weapon directly to a holster slot (Cylon's new API).
-     * This combines registration + name saving in one call.
+     * Put a weapon world reference into an empty holster slot: the weapon
+     * is taken into the player's inventory and the slot holds it. A
+     * throwable (grenade, mine) is accepted only while ROCK is active.
+     * Call on the game thread.
      *
      * @param holsterIndex  Holster index (1-7)
-     * @param weaponName    ETDD name, or full weapon name as fallback
-     * @param baseForm      TESForm* of the weapon's base object
-     * @param weaponRef     TESObjectREFR* of the grabbed weapon instance
-     * @param isMelee       true if this is a melee weapon
-     * @return true if weapon was successfully added to holster
+     * @param weaponRef     TESObjectREFR* of the weapon in the world
+     * @return true if the weapon is now in the holster
      */
-    virtual bool VH_CALL AddHolster(std::uint32_t holsterIndex, const char* weaponName,
-        void* baseForm, void* weaponRef, bool isMelee) = 0;
+    virtual bool VH_CALL AddHolster(std::uint32_t holsterIndex, void* weaponRef) = 0;
 
 };
 

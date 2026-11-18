@@ -167,6 +167,21 @@ namespace Holsters {
 		return false;
 	}
 
+	bool IsThrowableWeapon(TESObjectWEAP* weapon) {
+		// Fallout4.esm GrenadeSlot [EQUP:00046AAC].
+		constexpr UInt32 kGrenadeEquipSlot = 0x46AAC;
+		BGSEquipSlot* slot = weapon ? weapon->equipType.GetEquipSlot() : nullptr;
+		return slot && slot->formID == kGrenadeEquipSlot;
+	}
+
+	void ReferenceTagName(TESObjectREFR* reference, std::string& name, UInt16& length) {
+		name.clear();
+		length = 0;
+		if (reference && reference->baseForm) {
+			StackName(reference->baseForm, reference->extraDataList, name, length);
+		}
+	}
+
 	WeaponStack FindEquippedStack(const UInt32 formId, const std::uintptr_t instance) {
 		WeaponStack result;
 		if (!formId) {
@@ -325,19 +340,6 @@ namespace Holsters {
 				IsMeleeWeapon(visual.weapon), nullptr);
 			Offsets::DeleteRef(visual.reference);
 		}
-	}
-
-	void addHolster(int handle, std::string weapName, TESForm* baseForm, TESObjectREFR* object, bool isMeleeW) {
-		if (handle < 1 || handle > 7 ||
-			!isHolsterSlotEnabled(handle) ||
-			!HolsterContainers[handle] ||
-			!baseForm ||
-			!object ||
-			!object->GetObjectRootNode()) {
-			return;
-		}
-		nRegisterWeapon(baseForm->GetFullName(), baseForm, object->GetObjectRootNode()->GetAsNiNode(), handle, isMeleeW, nullptr);
-		SetHolsterTag(handle, weapName, static_cast<UInt16>(weapName.size()));
 	}
 
 	ExtraTextDisplayData* FindHolster(BGSInventoryList* inventory) {
