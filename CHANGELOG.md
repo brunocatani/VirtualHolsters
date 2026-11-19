@@ -54,7 +54,7 @@ Everything below changed since CylonSurfer's upstream commit "Added additions to
 
 ### Build
 
-- CMake and vcpkg build against CommonLibF4VR, with presets. This replaces the Visual Studio solution and project files.
+- CMake and vcpkg build against CommonLibF4VR, with presets. This replaces the Visual Studio solution and project files. `docs/Building.md` explains the setup for VS Code, Visual Studio and the terminal.
 - The ROCK headers come from ROCK's public `include/` folder through the `ROCK_INCLUDE_DIR` cache variable. The mod never links ROCK.
 - Unit tests for the button gesture, zone selection and slot masks (`tests/`) build through the `build_tests` target, outside the plugin build.
 
@@ -73,6 +73,10 @@ Added:
 | File | Purpose |
 | --- | --- |
 | `RockProvider.cpp/.h` | Optional ROCK 1.0 binding; the only place that calls ROCK. |
+| `HandHolsters.cpp/.h` | Per-hand holstering: the state of each hand, the holster button and what a press does. |
+| `HolsterDraw.cpp` | A draw or swap over several frames and the weapon moving from the holster into the hand. |
+| `HolsterMath.cpp/.h` | Transform helpers for the displayed weapons. |
+| `HolsterTrace.cpp/.h` | Log output. |
 | `HolsterInteraction.h` | Holster button gesture and zone selection, without engine types. |
 | `HolsterSlotPolicy.h` | Which holster slots are enabled, and their INI keys. |
 | `NativeEquipment.cpp/.h` | Read-only views of the player's equipped weapons and their models. |
@@ -82,6 +86,7 @@ Added:
 | `CMakeLists.txt`, `CMakePresets.json`, `vcpkg.json` | Build. |
 | `openvr/` | OpenVR import library and its license. |
 | `tests/HolsterInteractionTests.cpp` | Unit tests. |
+| `docs/Building.md`, `docs/HowItWorks.md` | How to build (VS Code, Visual Studio, terminal) and how the per-hand code works. |
 
 Removed: `VR.cpp/.h`, `VRHookAPI.h`, `VRManagerAPI.h`, `PapyrusVRAPI.h`, `PapyrusVRTypes.h`, `OpenVRTypes.h` (FO4VRTools), and `VirtualHolsters.sln`, `.vcxproj`, `.vcxproj.filters`, `.vscode` (old build).
 
@@ -89,7 +94,7 @@ Removed: `VR.cpp/.h`, `VRHookAPI.h`, `VRManagerAPI.h`, `PapyrusVRAPI.h`, `Papyru
 
 ### Where the code is
 
-The fork's per-hand holster logic is one block near the top of `Holsters.cpp`. It starts with an overview comment and is split into sections: state, transform math, zones and activation, hand facts, holstering, draw stand-ins, warm weapons, drawing, blending, and ROCK input. The original code resumes at `// Main Functions`. Elsewhere in `Holsters.cpp` the fork's changes are inside the original functions, mainly `MainLoop`, `VRButtonsMain`, `detectHolsterSphere`, `loadConfigFiles` and the weapon display functions.
+The fork's per-hand holster code is in its own files, so `Holsters.cpp` stays close to the original: `HandHolsters.cpp` (buttons, holstering, loose weapons, grenades), `HolsterDraw.cpp` (draws and swaps), `HolsterMath.cpp` and `HolsterTrace.cpp` (log output). `Holsters.cpp` calls into them from `MainLoop` and `VRButtonsMain`. The fork's other changes in `Holsters.cpp` are inside the original functions, mainly `MainLoop`, `VRButtonsMain`, `detectHolsterSphere`, `loadConfigFiles` and the weapon display functions. `docs/HowItWorks.md` follows one button press through the code.
 
 ### History
 

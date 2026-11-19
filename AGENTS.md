@@ -4,7 +4,8 @@ VirtualHolsters for Fallout 4 VR: weapons are holstered and drawn at body zones 
 
 ## Layout
 
-- `Holsters.cpp`: the runtime. The per-hand holster interaction is the block near the top of the file, with an overview comment and sections; the original code follows from `// Main Functions`.
+- `Holsters.cpp`: the original runtime (main loop, config mode, holster spheres, displayed weapons, API).
+- `HandHolsters.cpp/.h`: the per-hand holster interaction: one `HandState` per hand, the button handling and what a press does. `HolsterDraw.cpp`: a draw or swap over several frames and the weapon moving into the hand. `HolsterMath`: transform helpers. `HolsterTrace`: log output only. `docs/HowItWorks.md` follows one press through them.
 - `RockProvider.cpp/.h`: the only code that calls ROCK.
 - `HolsterInteraction.h`, `HolsterSlotPolicy.h`: the holster button gesture, zone selection and slot rules, free of engine types and unit tested.
 - `NativeEquipment`, `VRSceneGraph`, `VRHook`, `hook`, `LegacyBridge`, `ConfigPaths.h`: FO4VR, OpenVR and plugin-entry plumbing.
@@ -14,7 +15,8 @@ VirtualHolsters for Fallout 4 VR: weapons are holstered and drawn at body zones 
 
 ## Build and tests
 
-- CMake with vcpkg (`VCPKG_ROOT`) against CommonLibF4VR and the F4SEVR SDK: `cmake --preset fast`, then `cmake --build build-fast --config Release --target VirtualHolsters`.
+- CMake with vcpkg (`VCPKG_ROOT`) against CommonLibF4VR and the F4SEVR SDK: `cmake --preset fast`, then `cmake --build build-fast --config Release --target VirtualHolsters`. `docs/Building.md` is the step-by-step guide, including VS Code.
+- A `.cpp` is compiled against one SDK only: `LEGACY_GAMEPLAY_SOURCES` (F4SEVR `f4se/` headers) or `COMMONLIB_SOURCES` (CommonLibF4VR) in `CMakeLists.txt`.
 - Cache variables, set in an ignored `CMakeUserPresets.json`: `ROCK_INCLUDE_DIR` (required; ROCK's public `include/` folder, which holds `ROCK/Client.h`), `COMMON_LIB_F4VR_PATH` and `LEGACY_F4SEVR_PATH` when the defaults do not match the checkout layout, and `POST_BUILD_COPY_PLUGIN` with `COPY_PLUGIN_BASE_PATH` to copy the DLL into a mod folder's `F4SE/Plugins`.
 - Tests build only through the `build_tests` target: `cmake --build build-fast --config Release --target build_tests`, then `ctest --test-dir build-fast -C Release --output-on-failure`.
 
@@ -22,6 +24,13 @@ VirtualHolsters for Fallout 4 VR: weapons are holstered and drawn at body zones 
 
 - Settings live in the Documents folder under `My Games/Fallout4VR/Mods_Config/VirtualHolsters`: `VirtualHolsters.ini` and the `VRH_weapon_offsets`, `VRH_WeaponBlackList` and `VRH_MagazineBlackList` folders. A missing INI is created with the defaults; shipped default files are copied there once and a user's file is never overwritten.
 - Log: `My Games/Fallout4VR/F4SE/VirtualHolsters.log`.
+
+## Conventions
+
+- The upstream author maintains this code by hand. Keep the gameplay code plain: free functions, simple structs with `= value` defaults, `if`/`else` over nested `?:`, named functions over lambdas, no `[[nodiscard]]`, `noexcept` or `enum class` in the F4SEVR-side files, and short comments in everyday words.
+- Per-hand data goes into `HandState`; work that differs per hand is a function taking the hand, called for the right hand and then the left.
+- Log-only code goes into `HolsterTrace.cpp`, never into the input or draw functions.
+- `ToNiTransform` and `ToWeaponWorld` (`HandHolsters.h`) convert between ROCK's and the game's transforms.
 
 ## Invariants
 
