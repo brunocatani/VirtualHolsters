@@ -38,6 +38,24 @@ namespace Holsters {
 	extern bool isHolsterIntersected;
 	extern bool initBoneTreeFlag;
 	extern std::map<UInt32, class MyHolster*> HolsterRegisteredObjects;
+	extern std::map<UInt32, class MyWeapon*> WeaponRegisteredObjects;
+	extern std::string HolsterNames[];
+	extern std::string WeaponBones[];
+	extern std::string PAWeaponBones[];
+	extern std::string VisualArt[];
+	extern UInt32 lastInHolster[];
+	extern float c_hapticDuration;
+	extern float c_hapticIntensity;
+	extern const char* HolsterEventName;
+	extern RegistrationSetHolder<NullParameters> g_HolsterEventRegs;
+	extern bool _isConfigModeActive;
+	extern bool _WeaponHolsterInProgress;
+	// Seconds the last frame took (capped), for display blends.
+	extern float gFrameSeconds;
+	// The player skeleton the holster bones were resolved from.
+	extern const void* gResolvedRoot;
+	extern const void* gResolvedBoneTree;
+	extern int gResolvedTransforms;
 	typedef bool(*_IsSneaking)(Actor* a_actor);
 	extern RelocAddr<_IsSneaking> IsSneaking;
 
@@ -140,8 +158,8 @@ namespace Holsters {
 	bool initBoneTree();
 	void MainLoop();
 	void resetInteractionState();
-	bool isHolsterSlotEnabled(UInt32 slot) noexcept;
-	UInt32 getNextEnabledHolster(UInt32 current) noexcept;
+	bool isHolsterSlotEnabled(UInt32 slot);
+	UInt32 getNextEnabledHolster(UInt32 current);
 	void checkArmor();
 	void checkfists();
 	void handlePowerArmor();
@@ -198,6 +216,17 @@ namespace Holsters {
 	void nDestoryWeapon(UInt32 handle, bool destroyArt, bool playsound);
 	void playSwordSFX(const MyWeapon& weapon);
 	void moveWeapon(int);
+	// The slot's display or holster record, or null. Never inserts.
+	MyWeapon* SlotDisplay(UInt32 slot);
+	MyHolster* SlotHolster(UInt32 slot);
+	// The slot exists, is enabled and has its container.
+	bool SlotAvailable(UInt32 slot);
+	void ClearHandContacts();
+	void StartMenuCheck();
+	NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, UInt32 handle, const char* nodeName, const NiTransform* startWorld);
+	void attachHolsterArt(MyWeapon& record, UInt32 handle);
+	void releaseWeaponClone(MyWeapon*& record);
+	bool ResolveHolsterPose(UInt32 handle, const MyWeapon& weapon, NiTransform& pose);
 	void nRegisterWeapon(BSFixedString weapName, TESForm* baseForm, NiNode* source, UInt32 handle, bool isMeleeW, const NiTransform* startWorld);
 	void RegisterForHolsterEvents(StaticFunctionTag* base, VMObject* thisObject);
 	void UnRegisterForHolsterEvents(StaticFunctionTag* base, VMObject* thisObject);

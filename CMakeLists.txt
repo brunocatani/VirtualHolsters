@@ -150,6 +150,10 @@ add_library(
   SHARED
   "BSFlattenedBoneTree.cpp"
   "ConfigModeMenu.cpp"
+  "HandHolsters.cpp"
+  "HolsterDraw.cpp"
+  "HolsterMath.cpp"
+  "HolsterTrace.cpp"
   "Holsters.cpp"
   "InvSorting.cpp"
   "LegacyBridge.cpp"
@@ -219,6 +223,10 @@ set(
   LEGACY_GAMEPLAY_SOURCES
   "BSFlattenedBoneTree.cpp"
   "ConfigModeMenu.cpp"
+  "HandHolsters.cpp"
+  "HolsterDraw.cpp"
+  "HolsterMath.cpp"
+  "HolsterTrace.cpp"
   "Holsters.cpp"
   "InvSorting.cpp"
   "LegacyBridge.cpp"
