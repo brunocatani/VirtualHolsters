@@ -220,6 +220,9 @@ namespace Holsters {
 
 	// HolsterDraw.cpp
 
+	NiTransform ToNiTransform(const Rock::WeaponWorld& from);
+	Rock::WeaponWorld ToWeaponWorld(const NiTransform& from);
+
 	// Starts drawing the slot's weapon into the hand. With swap, the hand's
 	// weapon goes into the slot once the drawn one is in the hand.
 	bool BeginDraw(bool isLeft, UInt32 slot, const HandWeaponFacts& facts, bool swap);

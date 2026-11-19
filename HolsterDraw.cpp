@@ -9,17 +9,49 @@
 #include "f4se/NiNodes.h"
 
 namespace Holsters {
-	// Stand-ins and learned grips live in the hand's controller frame,
-	// where ROCK places the real weapon; the hand bone moves between an
-	// open hand and a grip, so a pose kept against it lands off target.
+	// ---- Converting between ROCK's and the game's transforms ----
+
+	NiTransform ToNiTransform(const Rock::WeaponWorld& from)
+	{
+		NiTransform to{};
+		for (int row = 0; row < 3; ++row) {
+			for (int column = 0; column < 3; ++column) {
+				to.rot.data[row][column] = from.rotate[row * 3 + column];
+			}
+			to.rot.data[row][3] = 0.0F;
+		}
+		to.pos = NiPoint3(from.translate[0], from.translate[1], from.translate[2]);
+		to.scale = from.scale;
+		return to;
+	}
+
+	Rock::WeaponWorld ToWeaponWorld(const NiTransform& from)
+	{
+		Rock::WeaponWorld to{};
+		for (int row = 0; row < 3; ++row) {
+			for (int column = 0; column < 3; ++column) {
+				to.rotate[row * 3 + column] = from.rot.data[row][column];
+			}
+		}
+		to.translate[0] = from.pos.x;
+		to.translate[1] = from.pos.y;
+		to.translate[2] = from.pos.z;
+		to.scale = from.scale;
+		return to;
+	}
+
+	// ---- The holster's copy in the hand (the "stand-in") ----
+
+	// The node the holster's copy hangs on while it is in the hand: the
+	// controller (wand) node, where ROCK also places the real weapon. The
+	// hand bone moves when the hand opens and closes, so it is not used.
 	NiNode* HandNode(bool isLeft)
 	{
 		return static_cast<NiNode*>(NativeEquipment::WandNode(isLeft));
 	}
 
-	// Moves a display clone under another node without it jumping. The
-	// clone is held across the detach, which drops the old parent's
-	// reference.
+	// Moves a holster copy to another parent node without it jumping on
+	// screen. The extra reference keeps it alive while it has no parent.
 	bool ReparentKeepingWorld(MyWeapon& record, NiNode* parent)
 	{
 		NiNode* mesh = record.WeapMesh;
@@ -50,9 +82,9 @@ namespace Holsters {
 		return NativeEquipment::FindEquippedModel(facts.nativeIndex, formId) != nullptr;
 	}
 
-	// On the grab the holster display leaves the hip in the hand. A
-	// firearm eases into the pose ROCK seats firearms at in that hand;
-	// melee, which ROCK reveals without a draw wait, stays as grabbed.
+	// The draw starts: the holster's copy moves into the hand and is now
+	// the stand-in. A gun then slides to where ROCK holds guns in that
+	// hand. Melee stays as grabbed.
 	void TakeDisplayIntoHand(HandTransfer& transfer)
 	{
 		const auto registered = WeaponRegisteredObjects.find(transfer.slot);
@@ -66,7 +98,7 @@ namespace Holsters {
 			return;
 		}
 		WeaponRegisteredObjects.erase(registered);
-		// A new display of this slot must not take this one for stale.
+		// Rename it, so a new copy for this slot does not remove it as a leftover.
 		const std::string inHandName = HolsterNames[transfer.slot] + (transfer.isLeft ? "InLeftHand" : "InRightHand");
 		record->WeapMesh->m_name = inHandName.c_str();
 		record->followsAim = !record->isMelee;
@@ -80,7 +112,7 @@ namespace Holsters {
 		transfer.inHand = record;
 	}
 
-	// A draw that did not reach the hand puts the stand-in back.
+	// The draw failed: put the copy back in the holster.
 	void ReturnDisplayToHolster(HandTransfer& transfer)
 	{
 		MyWeapon* record = transfer.inHand;
@@ -156,10 +188,11 @@ namespace Holsters {
 		releaseWeaponClone(gLeftHand.handoff.clone);
 	}
 
-	// ROCK keeps every holstered weapon's animations loaded, so a draw
-	// never waits on the engine's first-use load. Sent after a load and
-	// whenever a holster's contents change; the inventory is read only
-	// then.
+	// ---- Keeping holstered weapons loaded in ROCK ----
+
+	// Tells ROCK which weapons are holstered, so ROCK keeps their animations
+	// loaded and a draw does not hitch on first use. Sent after a load and
+	// when a holster's weapon changes.
 	void ServiceWarmWeapons()
 	{
 		static std::array<std::string, kMaximumHolsterSlots + 1> s_sentNames{};
@@ -177,7 +210,7 @@ namespace Holsters {
 				continue;
 			}
 			const WeaponStack stack = FindStoredStack(holsteredWeapNames[slot]);
-			// A throwable is drawn as a grab, never equipped.
+			// Grenades are grabbed, never equipped.
 			if (stack.found && stack.form && stack.stackID >= 0 && !IsThrowableWeapon(stack.weapon)) {
 				weapons[count++] = { stack.form->formID, static_cast<std::uint32_t>(stack.stackID) };
 			}
@@ -188,6 +221,8 @@ namespace Holsters {
 			}
 		}
 	}
+
+	// ---- Drawing and swapping ----
 
 	bool RequestDraw(HandTransfer& transfer)
 	{
@@ -284,14 +319,14 @@ namespace Holsters {
 		ReturnDisplayToHolster(transfer);
 		const UInt32 slot = transfer.slot;
 		transfer = {};
-		// The weapon stays holstered; restore a display hidden early.
+		// The weapon is still holstered: show it again if its copy is gone.
 		if (gShowWeapons && holsteredWeapNames[slot] != "Empty" && !SlotDisplay(slot)) {
 			QueueStoredVisual(FindStoredStack(holsteredWeapNames[slot]), slot);
 		}
 	}
 
-	// While the outgoing weapon is still in the hand, its hidden clone
-	// starts from wherever the hand holds it this frame.
+	// Swap: while the old weapon is still in the hand, keep its hidden copy
+	// at the hand, so it starts from there when it is shown.
 	void TrackOutgoing(HandTransfer& transfer)
 	{
 		if (!transfer.outgoing || !transfer.outgoingHidden || !transfer.outgoing->WeapMesh) {
@@ -356,8 +391,8 @@ namespace Holsters {
 		transfer = {};
 	}
 
-	// The holster display hides on the frame the weapon is presented in
-	// the hand; the tag clears only once the equip has succeeded.
+	// The real weapon appeared in the hand: remove the holster's copy. The
+	// holster tag is cleared later, when the equip has finished.
 	void HidePresentedDisplay(const HandTransfer& transfer)
 	{
 		if (transfer.inHand) {
@@ -447,6 +482,8 @@ namespace Holsters {
 		CancelTransfer(gLeftHand.transfer);
 	}
 
+	// ---- Sliding holster copies into place ----
+
 	void AdvanceBlend(MyWeapon& weapon)
 	{
 		if (!weapon.blending || !weapon.WeapMesh) {
@@ -466,26 +503,18 @@ namespace Holsters {
 		}
 	}
 
-	// A drawn firearm stand-in eases from where it was grabbed into ROCK's
-	// firing aim for the hand, then keeps following it. Without an aim it
-	// holds still. ROCK usually reveals the real weapon before the ease
-	// ends, so each frame tells ROCK where the stand-in is and the real
-	// weapon continues from there instead of appearing at the aim.
+	// Moves a drawn gun's stand-in each frame: it slides from the holster to
+	// where ROCK holds guns in that hand and then follows that point. ROCK
+	// is told where the stand-in is, so the real weapon continues from there
+	// when ROCK shows it.
 	void AdvanceStandIn(MyWeapon& weapon, bool isLeft, std::uint64_t command)
 	{
 		NiNode* hand = HandNode(isLeft);
 		Rock::WeaponWorld aim{};
 		bool placed = false;
 		if (weapon.followsAim && weapon.WeapMesh && hand && Rock::GetFiringAimWorld(isLeft, aim)) {
-			NiTransform world{};
-			for (int row = 0; row < 3; ++row) {
-				for (int column = 0; column < 3; ++column) {
-					world.rot.data[row][column] = aim.rotate[row * 3 + column];
-				}
-				world.rot.data[row][3] = 0.0F;
-			}
-			world.pos = NiPoint3(aim.translate[0], aim.translate[1], aim.translate[2]);
-			// The aim carries no model scale; the clone keeps its own.
+			NiTransform world = ToNiTransform(aim);
+			// ROCK's aim has no model scale: keep the copy's own.
 			world.scale = weapon.WeapMesh->m_worldTransform.scale;
 			NiTransform local{};
 			if (LocalFromWorld(hand->m_worldTransform, world, local)) {
@@ -501,16 +530,7 @@ namespace Holsters {
 		}
 		if (command && weapon.followsAim && weapon.WeapMesh && hand && (weapon.WeapMesh->flags & 0x1) == 0) {
 			const NiTransform world = WorldFromLocal(hand->m_worldTransform, weapon.WeapMesh->m_localTransform);
-			Rock::WeaponWorld shown{};
-			for (int row = 0; row < 3; ++row) {
-				for (int column = 0; column < 3; ++column) {
-					shown.rotate[row * 3 + column] = world.rot.data[row][column];
-				}
-			}
-			shown.translate[0] = world.pos.x;
-			shown.translate[1] = world.pos.y;
-			shown.translate[2] = world.pos.z;
-			shown.scale = world.scale;
+			const Rock::WeaponWorld shown = ToWeaponWorld(world);
 			(void)Rock::ReportDrawPose(command, shown);
 		}
 	}

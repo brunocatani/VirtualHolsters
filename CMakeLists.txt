@@ -145,9 +145,10 @@ set_target_properties(
     INTERFACE_INCLUDE_DIRECTORIES "${OPENVR_ROOT}"
 )
 
-add_library(
-  ${PROJECT_NAME}
-  SHARED
+# Sources built against the F4SEVR SDK (f4se/ headers). A new gameplay .cpp
+# goes into this list and nowhere else.
+set(
+  LEGACY_GAMEPLAY_SOURCES
   "BSFlattenedBoneTree.cpp"
   "ConfigModeMenu.cpp"
   "HandHolsters.cpp"
@@ -160,15 +161,26 @@ add_library(
   "Matrix.cpp"
   "MenuChecker.cpp"
   "MiscStructs.cpp"
-  "NativeEquipment.cpp"
   "Offsets.cpp"
-  "RockProvider.cpp"
   "Utils.cpp"
   "VRHook.cpp"
+  "weaponOffset.cpp"
+)
+# Sources built against CommonLibF4VR (RE:: and REL:: headers).
+set(
+  COMMONLIB_SOURCES
+  "NativeEquipment.cpp"
+  "RockProvider.cpp"
   "VRSceneGraph.cpp"
   "hook.cpp"
   "main.cpp"
-  "weaponOffset.cpp"
+)
+
+add_library(
+  ${PROJECT_NAME}
+  SHARED
+  ${LEGACY_GAMEPLAY_SOURCES}
+  ${COMMONLIB_SOURCES}
   "VirtualHolsters.rc"
 )
 
@@ -219,25 +231,6 @@ target_compile_options(
     "$<$<CONFIG:RELEASE>:/Zc:inline;/JMC-;/Ob3>"
 )
 
-set(
-  LEGACY_GAMEPLAY_SOURCES
-  "BSFlattenedBoneTree.cpp"
-  "ConfigModeMenu.cpp"
-  "HandHolsters.cpp"
-  "HolsterDraw.cpp"
-  "HolsterMath.cpp"
-  "HolsterTrace.cpp"
-  "Holsters.cpp"
-  "InvSorting.cpp"
-  "LegacyBridge.cpp"
-  "Matrix.cpp"
-  "MenuChecker.cpp"
-  "MiscStructs.cpp"
-  "Offsets.cpp"
-  "Utils.cpp"
-  "VRHook.cpp"
-  "weaponOffset.cpp"
-)
 set_source_files_properties(
   ${LEGACY_GAMEPLAY_SOURCES}
   PROPERTIES

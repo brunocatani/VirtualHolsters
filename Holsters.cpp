@@ -197,34 +197,26 @@ namespace Holsters {
 	bool _isConfigModeActive = false;
 	bool initBoneTreeFlag = true;
 
-	SlotPolicy::SlotMask s_enabledHolsterSlots =
-		SlotPolicy::kAllSlotsMask;
+	// Which holster slots are switched on ([Holster Slots] in the INI).
+	SlotPolicy::SlotMask s_enabledHolsterSlots = SlotPolicy::kAllSlotsMask;
 
-	// The player's third-person root and flattened bone tree that the
-	// holster bones and boneTreeMap were resolved from (initBoneTree).
-	// Both are raw engine pointers looked up once; a new tree means every
-	// holster bone and bone index is stale, so the next frame rebuilds.
-	const void* gResolvedRoot{};
+	// The player skeleton the holster bones were looked up in. When the game
+	// builds a new skeleton, the bones are looked up again next frame.
+	const void* gResolvedRoot = nullptr;
+	const void* gResolvedBoneTree = nullptr;
+	int gResolvedTransforms = 0;
+	bool s_skeletonRebuildPending = false;
 
-	const void* gResolvedBoneTree{};
-
-	int gResolvedTransforms{};
-
-	bool s_skeletonRebuildPending{};
-
-	// The second config-button press must follow the first this fast.
-	const auto kConfigDoublePress = std::chrono::milliseconds(300);
-	Clock::time_point s_configFirstPress{};
-
-	Clock::time_point s_lastFrame{};
-
+	// Frame time, and timers that used to be sleeping threads.
 	float gFrameSeconds = 0.0F;
-
-	Clock::time_point s_fistsPressedUntil{};
-
-	Clock::time_point s_menuCheckUntil{};
-
-	Clock::time_point s_infoPressedUntil{};
+	Clock::time_point s_lastFrame;
+	Clock::time_point s_fistsPressedUntil;
+	Clock::time_point s_menuCheckUntil;
+	Clock::time_point s_infoPressedUntil;
+	// Config mode opens on a double press: the second press must follow the
+	// first this fast.
+	const auto kConfigDoublePress = std::chrono::milliseconds(300);
+	Clock::time_point s_configFirstPress;
 
 	bool TryGetHandPosition(
 		BSFlattenedBoneTree* tree,

@@ -11,14 +11,17 @@
 #include "f4se/GameReferences.h"
 
 namespace Holsters {
+	// ---- Hands, haptics and the game's own grab ----
+
+	// The game's own grab distances, saved while they are switched off.
 	struct GrabSettingSnapshot
 	{
-		float primaryDistance{};
-		float secondaryDistance{};
-		float floorMultiplier{};
-		bool primaryCaptured{};
-		bool secondaryCaptured{};
-		bool floorCaptured{};
+		float primaryDistance = 0.0F;
+		float secondaryDistance = 0.0F;
+		float floorMultiplier = 0.0F;
+		bool primaryCaptured = false;
+		bool secondaryCaptured = false;
+		bool floorCaptured = false;
 	};
 
 	HandState gLeftHand;
@@ -108,6 +111,8 @@ namespace Holsters {
 		s_grabSettingSnapshot = {};
 	}
 
+	// With c_ActivationDisabled, the game's grab and activate are switched off
+	// while a hand works a holster and switched back on afterwards.
 	void SetActivationSuppressed(bool suppress)
 	{
 		if (suppress == s_activationSuppressed) {
@@ -123,8 +128,10 @@ namespace Holsters {
 		s_activationSuppressed = suppress;
 	}
 
-	// Whether the slot's tagged weapon is a throwable. The inventory is
-	// read only when the slot's tag changes, never per frame.
+	// ---- What is in a slot and in a hand ----
+
+	// True when the slot holds a grenade or mine. The inventory is only
+	// looked up when the slot's weapon changes, not every frame.
 	bool SlotHoldsThrowable(UInt32 slot)
 	{
 		static std::array<std::string, kMaximumHolsterSlots + 1> s_names{};
@@ -140,8 +147,8 @@ namespace Holsters {
 		return s_throwable[slot];
 	}
 
-	// KabutoVR owns the hand while it is at the head or holds or equips a
-	// helmet; no holster draw then. Read on a draw only, never per frame.
+	// KabutoVR: no draw while the hand is at the head, holds a helmet or puts
+	// one on. Only asked when a draw is about to start.
 	bool KabutoBlocksDraw()
 	{
 		KabutoAPI* kabuto = RequestKabutoAPI();
@@ -163,7 +170,8 @@ namespace Holsters {
 	{
 		HandWeaponFacts facts{};
 		if (Rock::IsBound()) {
-			// ROCK owns hand assignment; act only on its current publication.
+			// With ROCK loaded, ROCK says which hand holds what. Do nothing
+			// while ROCK is not running (menus, loading).
 			if (!Rock::IsActive()) {
 				return facts;
 			}
@@ -186,8 +194,8 @@ namespace Holsters {
 		if (!*g_player || !*g_gameVM || !(*g_gameVM)->m_virtualMachine) {
 			return facts;
 		}
-		// Vanilla FO4VR holds one weapon, in the configured weapon hand; a
-		// draw into the other hand would replace it.
+		// Without ROCK the game has one weapon, in the weapon hand. Drawing
+		// with the other hand would replace it.
 		facts.known = true;
 		const bool weaponHand = isLeft == !gIsRightHanded;
 		TESObjectWEAP* drawn = (*g_player)->actorState.IsWeaponDrawn() ?
@@ -198,6 +206,8 @@ namespace Holsters {
 		facts.formId = drawn ? drawn->formID : 0;
 		return facts;
 	}
+
+	// ---- Deciding what a press does ----
 
 	static bool HandWorksSlot(const HandState& hand, UInt32 slot)
 	{
@@ -264,25 +274,18 @@ namespace Holsters {
 		return HolsterAction_None;
 	}
 
-	// Where the hand's weapon model is on screen now. The first weapon's
-	// model is rendered where its node stands. ROCK re-places the second
-	// weapon's model late in the frame after the engine returns it to its
-	// biped carry, so its last placement comes from ROCK (getGrip(1) is
-	// that model's own world).
+	// ---- Holstering the hand's weapon ----
+
+	// Finds the hand's weapon model and where it is on screen. The second
+	// (off hand) weapon is placed by ROCK late in the frame, so its position
+	// is asked from ROCK.
 	bool CaptureHeldWeapon(const HandWeaponFacts& facts, NiNode*& model, NiTransform& world)
 	{
 		model = static_cast<NiNode*>(
 			NativeEquipment::FindEquippedModel(facts.nativeIndex, facts.formId));
 		Rock::WeaponWorld placed{};
 		if (model && facts.nativeIndex == 1 && Rock::IsActive() && Rock::GetWeaponWorld(1, placed)) {
-			for (int row = 0; row < 3; ++row) {
-				for (int column = 0; column < 3; ++column) {
-					world.rot.data[row][column] = placed.rotate[row * 3 + column];
-				}
-				world.rot.data[row][3] = 0.0F;
-			}
-			world.pos = NiPoint3(placed.translate[0], placed.translate[1], placed.translate[2]);
-			world.scale = placed.scale;
+			world = ToNiTransform(placed);
 			return model != nullptr;
 		}
 		if (model) {
@@ -313,9 +316,9 @@ namespace Holsters {
 		return NativeUnequip(stack);
 	}
 
-	// The hand's weapon goes into the empty slot. The clone appears where
-	// the hand held the weapon in the frame the weapon leaves the hand, so
-	// it never disappears, then eases into the holster.
+	// Puts the hand's weapon into the empty slot. The holster's copy starts
+	// where the hand held the weapon and slides into the holster, so the
+	// weapon never vanishes in between.
 	bool HolsterHandWeapon(bool isLeft, UInt32 slot, const HandWeaponFacts& facts)
 	{
 		const WeaponStack stack = FindHandStack(facts);
@@ -353,6 +356,8 @@ namespace Holsters {
 		return true;
 	}
 
+	// ---- Loose weapons (picked up with ROCK) into a holster ----
+
 	TESObjectREFR* LookupReference(std::uint32_t formId)
 	{
 		TESForm* form = formId ? LookupFormByID(formId) : nullptr;
@@ -365,9 +370,8 @@ namespace Holsters {
 		return reference && reference->baseForm && reference->baseForm->formType == kFormType_WEAP;
 	}
 
-	// The reference's weapon goes into the empty slot: the display starts
-	// where the reference is shown, then the item is taken into the
-	// inventory and the slot is tagged with its inventory name.
+	// Takes a weapon lying in the world into the inventory and the empty
+	// slot. The holster's copy starts where the weapon was.
 	bool DepositReference(UInt32 slot, TESObjectREFR* reference)
 	{
 		if (!reference || !SlotAvailable(slot) || holsteredWeapNames[slot] != "Empty" || SlotHasTransfer(slot)) {
@@ -418,9 +422,9 @@ namespace Holsters {
 		deposit = {};
 	}
 
-	// Keeps the hand's claim on the loose weapon it holds while it is in
-	// an empty holster. A claim outlives ROCK's let-go by ROCK's claim
-	// reservation, which covers toggle grip letting go on the press.
+	// Runs every frame. While the hand holds a loose weapon inside an empty
+	// holster, asks ROCK to reserve that weapon for us, so ROCK's own
+	// shoulder stash or another mod cannot take it first.
 	void UpdateDepositClaim(bool isLeft, const HandState& hand, bool held)
 	{
 		auto& deposit = GetHand(isLeft).deposit;
@@ -447,8 +451,8 @@ namespace Holsters {
 			}
 			return;
 		}
-		// ROCK let go first: keep the claim while the press is held (toggle
-		// grip lets go on the press) and on the frame it is released.
+		// ROCK already let go (toggle grip lets go when the button is pressed):
+		// keep the reservation while the button is still held in the slot.
 		const bool pressStillInSlot = !holding && slotFree && slot == deposit.slot &&
 			(held || hand.gesture.Phase() == Interaction::GesturePhase::kHeld);
 		if (deposit.lease && !pressStillInSlot) {
@@ -456,7 +460,8 @@ namespace Holsters {
 		}
 	}
 
-	// A release in the claimed slot stores the loose weapon.
+	// The button was released in the reserved slot: store the loose weapon.
+	// ServiceDeposits finishes it once ROCK has let go.
 	bool StartDeposit(bool isLeft, UInt32 slot)
 	{
 		auto& deposit = GetHand(isLeft).deposit;
@@ -502,7 +507,10 @@ namespace Holsters {
 		ReleaseDeposit(gLeftHand.deposit);
 	}
 
-	// A request ROCK reports busy is retried next frame until the deadline.
+	// ---- Grenades and mines ----
+
+	// Asks ROCK to put the grenade into the hand. If ROCK is busy, the
+	// request is repeated next frame.
 	bool RequestThrowable(ThrowableDraw& draw, bool isLeft)
 	{
 		std::uint64_t command = 0;
@@ -539,8 +547,8 @@ namespace Holsters {
 		return true;
 	}
 
-	// ROCK's admitted grab ends with its own result. The slot keeps its
-	// tag until no copy is left (ReconcileHolsterTags).
+	// Waits for ROCK to finish the grenade grab. The slot keeps its tag
+	// until none are left (ReconcileHolsterTags).
 	static void ServiceThrowableDraw(ThrowableDraw& draw, bool isLeft, Clock::time_point now)
 	{
 		if (!draw.active) {
@@ -582,7 +590,8 @@ namespace Holsters {
 		gLeftHand.throwableDraw = {};
 	}
 
-	// A press that drew a throwable and stays in its holster empties it.
+	// After drawing a grenade: keeping the button held inside its holster
+	// for kThrowableClearHold empties the holster.
 	void ServiceThrowableHold(HandState& hand, bool isLeft, bool held)
 	{
 		if (!hand.throwableHoldSlot) {
@@ -608,21 +617,23 @@ namespace Holsters {
 		_MESSAGE("Holster %u emptied by a held press of the %s hand", slot, isLeft ? "left" : "right");
 	}
 
-	// ROCK must not grab, drop, stash or act on the holster button with a
-	// hand working a holster, including a press that has left the zone.
+	// ---- Keeping ROCK off the holster button ----
+
+	// Tells ROCK to leave the hand alone while it works a holster: no grab,
+	// no drop, no shoulder stash, and the holster button is ours.
 	void ReserveRockInput(bool isLeft, const HandState& hand, bool actionPossible)
 	{
 		if (!Rock::IsBound()) {
 			return;
 		}
 		// A loose weapon going into a shoulder holster must not go into
-		// ROCK's own shoulder stash instead.
+		// ROCK's own shoulder stash.
 		const auto& deposit = GetHand(isLeft).deposit;
 		if (deposit.lease && (deposit.slot == 1 || deposit.slot == 2)) {
 			Rock::ReserveHand(isLeft, false, 0, true);
 		}
-		// A drawn throwable is ROCK's grab: letting go of the button
-		// throws it.
+		// A drawn grenade is ROCK's grabbed object: ROCK keeps the button, so
+		// letting go throws it.
 		if (hand.pressDrewThrowable) {
 			return;
 		}
@@ -634,10 +645,9 @@ namespace Holsters {
 		}
 		const auto mask = vr::ButtonMaskFromId(static_cast<vr::EVRButtonId>(c_holsterButtonID));
 		const bool grip = c_holsterButtonID == vr::EVRButtonId::k_EButton_Grip;
-		// A held reserved chord withholds all of the hand's game input,
-		// trigger included (ROCK effectiveHandInputSuppressionFlags). Once
-		// a draw took the press, the grip stays off ROCK's grab but the
-		// chord is dropped, so the drawn weapon fires with the grip held.
+		// While the button is reserved, ROCK also blocks that hand's trigger.
+		// After a draw the button is given back (only ROCK's grab stays off),
+		// so the drawn weapon can fire with the grip still held.
 		const bool drawTookPress = grip && phase == Interaction::GesturePhase::kConsumed;
 		Rock::ReserveHand(
 			isLeft,
@@ -646,9 +656,9 @@ namespace Holsters {
 			hand.zone == 1 || hand.zone == 2);
 	}
 
-	// Buttons
+	// ---- Buttons ----
 	// VRButtonsMain calls UpdateHandGestures with what it read from the
-	// controllers, then RunHandActions to act on what the gestures decided.
+	// controllers, then RunHandActions to do what the presses asked for.
 
 	static bool s_gameplayEnabled = false;
 	static HolsterButtonInput s_input;
@@ -667,8 +677,7 @@ namespace Holsters {
 		return DecideAction(Interaction::GestureActionKind::kReleaseInZone, hand.zone, isLeft, facts) != HolsterAction_None;
 	}
 
-	// A press draws on its frame or later in the same hold (the gesture
-	// keeps it to the pressed slot).
+	// True when a press may draw right now.
 	static bool CanDrawNow(const HandState& hand, bool isLeft,
 		bool controllerAvailable, bool held, const HandWeaponFacts& facts)
 	{
@@ -688,10 +697,9 @@ namespace Holsters {
 		const bool twoHandedNow = facts.supported || facts.supports;
 		const bool twoHandedBefore = hand.twoHandedLastFrame;
 		hand.twoHandedLastFrame = twoHandedNow;
-		// pressTwoHanded follows the hold while this hand grips and
-		// freezes once it lets go: on the press with toggle grip, on
-		// the release with hold grip. It outlives the release frame
-		// (the release action reads it); each press sets it afresh.
+		// pressTwoHanded: this press let go of a weapon held in both hands.
+		// It is updated while the hand still grips and kept after it lets go,
+		// until the next press.
 		if (!held) {
 			hand.pressFromZone = false;
 			hand.pressDrewThrowable = false;
@@ -699,15 +707,13 @@ namespace Holsters {
 			return;
 		}
 		if (hand.gesture.Phase() == Interaction::GesturePhase::kIdle) {
-			// ROCK's toggle grip lets go on the press and frees the hand
-			// a frame later, which would make the slot drawable
-			// mid-press. A hand already free on the press frame takes
-			// the frame before, so this does not depend on whether
-			// ROCK or this mod reads the press first.
+			// With ROCK's toggle grip the hand is free one frame after the
+			// press. A hand that was two-handed in the frame before counts
+			// too, so the result does not depend on who reads the button first.
 			hand.pressTwoHanded = twoHandedNow || (!facts.grips && twoHandedBefore);
-			// Only a press that can act in its zone keeps the button
-			// from ROCK until release; any other press there (a
-			// two-handed weapon's let-go) stays ROCK's.
+			// Only a press that can do something in its holster keeps the
+			// button away from ROCK. Any other press (letting go of a
+			// two-handed weapon) stays ROCK's.
 			hand.pressFromZone = hand.zone != Interaction::kNoSlot &&
 				(ReleasePossible(hand, isLeft, facts) ||
 					(!hand.pressTwoHanded && DrawPossible(hand, isLeft, facts)));
@@ -790,8 +796,8 @@ namespace Holsters {
 			return;
 		}
 		HolsterAction action = DecideAction(decision.Kind(), slot, isLeft, facts);
-		// A two-handed let-go press that ends in an occupied zone
-		// does not draw either: the hand is free by its release.
+		// Letting go of a two-handed weapon inside an occupied holster does
+		// not draw.
 		const bool twoHandedLetGo = decision.Kind() == Interaction::GestureActionKind::kReleaseInZone &&
 			hand.pressTwoHanded;
 		if (action == HolsterAction_Draw && twoHandedLetGo) {
