@@ -7,7 +7,7 @@ namespace Holsters {
 	// Input gates the trace last reported (bit set built in VRButtonsMain).
 	std::uint32_t s_tracedInputGates{ 0xFFFFFFFFu };
 
-	FrameSkip s_tracedFrameSkip{ FrameSkip::kNone };
+	FrameSkip s_tracedFrameSkip{ FrameSkip_None };
 
 	constexpr float kHeartbeatSeconds = 10.0F;
 
@@ -19,27 +19,53 @@ namespace Holsters {
 
 	std::uint32_t s_tracedButtonSource[2]{ 0xFFFFFFFFu, 0xFFFFFFFFu };
 
-	const char* FrameSkipName(const FrameSkip skip)
+	const char* FrameSkipName(FrameSkip skip)
 	{
 		switch (skip) {
-		case FrameSkip::kNone: return "none";
-		case FrameSkip::kNoPlayer: return "no-player";
-		case FrameSkip::kNoRoot: return "no-third-person-root";
-		case FrameSkip::kBoneTreeInit: return "bone-tree-init-failed";
+		case FrameSkip_None: return "none";
+		case FrameSkip_NoPlayer: return "no-player";
+		case FrameSkip_NoRoot: return "no-third-person-root";
+		case FrameSkip_BoneTreeInit: return "bone-tree-init-failed";
 		}
 		return "?";
 	}
 
-	void TraceFrameSkip(const FrameSkip skip)
+	const char* TraceTime()
+	{
+		static char text[16];
+		SYSTEMTIME now{};
+		GetLocalTime(&now);
+		std::snprintf(text, sizeof(text), "%02u:%02u:%02u.%03u",
+			now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+		return text;
+	}
+
+	void TraceNearestHolster(HandState& hand, const Interaction::ZoneSample* samples, std::size_t count)
+	{
+		hand.trace.nearestSlot = Interaction::kNoSlot;
+		hand.trace.zoneSamples = count;
+		float bestMargin = std::numeric_limits<float>::infinity();
+		for (std::size_t index = 0; index < count; ++index) {
+			const float margin = samples[index].distance - samples[index].radius;
+			if (margin < bestMargin) {
+				bestMargin = margin;
+				hand.trace.nearestSlot = samples[index].slot;
+				hand.trace.nearestDistance = samples[index].distance;
+				hand.trace.nearestRadius = samples[index].radius;
+			}
+		}
+	}
+
+	void TraceFrameSkip(FrameSkip skip)
 	{
 		if (skip != s_tracedFrameSkip) {
-			_MESSAGE("[%s] Holster frame %s: reason=%s", TraceStamp().text,
-				skip == FrameSkip::kNone ? "resumed" : "skipped", FrameSkipName(skip));
+			_MESSAGE("[%s] Holster frame %s: reason=%s", TraceTime(),
+				skip == FrameSkip_None ? "resumed" : "skipped", FrameSkipName(skip));
 			s_tracedFrameSkip = skip;
 		}
 	}
 
-	const char* GesturePhaseName(const Interaction::GesturePhase phase)
+	const char* GesturePhaseName(Interaction::GesturePhase phase)
 	{
 		switch (phase) {
 		case Interaction::GesturePhase::kNeedsRelease:
@@ -54,7 +80,7 @@ namespace Holsters {
 		return "unknown";
 	}
 
-	const char* GestureActionName(const Interaction::GestureActionKind kind)
+	const char* GestureActionName(Interaction::GestureActionKind kind)
 	{
 		switch (kind) {
 		case Interaction::GestureActionKind::kNone:
@@ -73,8 +99,8 @@ namespace Holsters {
 	// holster) or the hand went for the displayed weapon away from the
 	// zone centre (handInBody stays near the shown weapon, displayOffset
 	// large). Event-only: called on button edges, never per frame.
-	void FormatNearestPlacement(const UInt32 slot, const NiPoint3& handWorld,
-		char* buffer, const std::size_t size)
+	void FormatNearestPlacement(UInt32 slot, const NiPoint3& handWorld,
+		char* buffer, std::size_t size)
 	{
 		buffer[0] = '\0';
 		const auto holsterIt = HolsterRegisteredObjects.find(slot);
@@ -117,58 +143,58 @@ namespace Holsters {
 
 	// Press diagnostics: a press on an occupied slot that does not draw at
 	// once names what blocked it.
-	static void TracePress(HandInteractionRuntime& hand, const bool isLeft,
-		const Interaction::GesturePhase before, const HandWeaponFacts& facts)
+	static void TracePress(HandState& hand, bool isLeft,
+		Interaction::GesturePhase before, const HandWeaponFacts& facts)
 	{
 		if (before != Interaction::GesturePhase::kIdle || hand.gesture.Phase() == Interaction::GesturePhase::kIdle) {
 			return;
 		}
-		hand.pressedAt = Clock::now();
+		hand.trace.pressedAt = Clock::now();
 		if (hand.gesture.Phase() == Interaction::GesturePhase::kHeld) {
 			const UInt32 slot = hand.zone;
 			if (slot != Interaction::kNoSlot && holsteredWeapNames[slot] != "Empty" && !facts.holds) {
 				_MESSAGE("Holster %u press by the %s hand did not arm a draw: known=%d holds=%d twoHandedPress=%d canReceive=%d busyObject=%d handTransfer=%d slotTransfer=%d slotAvailable=%d",
 					slot, isLeft ? "left" : "right", facts.known, facts.holds, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
-					Rock::HandBusyWithObject(isLeft) ? 1 : 0, TransferFor(isLeft).active ? 1 : 0,
+					Rock::HandBusyWithObject(isLeft) ? 1 : 0, GetHand(isLeft).transfer.active ? 1 : 0,
 					SlotHasTransfer(slot) ? 1 : 0, SlotAvailable(slot) ? 1 : 0);
 			}
 		}
 	}
 
 	// One line per press and per release of the holster button.
-	static void TraceButtonEdge(HandInteractionRuntime& hand, const bool isLeft, const bool held,
-		const Interaction::GesturePhase before, const Interaction::GestureDecision& decision,
+	static void TraceButtonEdge(HandState& hand, bool isLeft, bool held,
+		Interaction::GesturePhase before, const Interaction::GestureDecision& decision,
 		const HandWeaponFacts& facts)
 	{
 		const auto after = hand.gesture.Phase();
-		if (held != hand.heldLastFrame) {
+		if (held != hand.trace.heldLastFrame) {
 			char placement[384];
-			FormatNearestPlacement(hand.nearestSlot, hand.position, placement, sizeof(placement));
+			FormatNearestPlacement(hand.trace.nearestSlot, hand.trace.position, placement, sizeof(placement));
 			_MESSAGE("[%s] Holster input %s by the %s hand: zone=%u nearest=%u dist=%.1f radius=%.1f samples=%u phase=%s->%s action=%s holds=%d grips=%d twoHandedPress=%d canReceive=%d transfer=%d%s",
-				TraceStamp().text, held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.nearestSlot,
-				hand.nearestDistance, hand.nearestRadius, static_cast<unsigned>(hand.zoneSamples),
+				TraceTime(), held ? "press" : "release", isLeft ? "left" : "right", hand.zone, hand.trace.nearestSlot,
+				hand.trace.nearestDistance, hand.trace.nearestRadius, static_cast<unsigned>(hand.trace.zoneSamples),
 				GesturePhaseName(before), GesturePhaseName(after), GestureActionName(decision.Kind()),
 				facts.holds, facts.grips, hand.pressTwoHanded ? 1 : 0, facts.canReceive,
-				TransferFor(isLeft).active ? 1 : 0, placement);
+				GetHand(isLeft).transfer.active ? 1 : 0, placement);
 		} else if (held && after == Interaction::GesturePhase::kNeedsRelease &&
 			(before == Interaction::GesturePhase::kHeld || before == Interaction::GesturePhase::kConsumed)) {
 			_MESSAGE("Holster gesture for the %s hand reset during a press (phase %s)",
 				isLeft ? "left" : "right", GesturePhaseName(before));
 		}
-		hand.heldLastFrame = held;
+		hand.trace.heldLastFrame = held;
 	}
 
 	void TraceHandFrame(
 		const HolsterButtonInput& input,
-		const Interaction::GesturePhase leftPhaseBefore,
-		const Interaction::GesturePhase rightPhaseBefore,
+		Interaction::GesturePhase leftPhaseBefore,
+		Interaction::GesturePhase rightPhaseBefore,
 		const Interaction::GestureDecision& leftDecision,
 		const Interaction::GestureDecision& rightDecision,
 		const HandWeaponFacts& leftFacts,
 		const HandWeaponFacts& rightFacts)
 	{
-		TracePress(s_leftHand, true, leftPhaseBefore, leftFacts);
-		TracePress(s_rightHand, false, rightPhaseBefore, rightFacts);
+		TracePress(gLeftHand, true, leftPhaseBefore, leftFacts);
+		TracePress(gRightHand, false, rightPhaseBefore, rightFacts);
 
 		// Input trace, on gate changes and per press and release, never
 		// per frame. Each cause that can stop every holster at once has
@@ -178,7 +204,7 @@ namespace Holsters {
 		const std::uint32_t inputGates =
 			(_isConfigModeActive ? 1u : 0u) | (input.gameStopped ? 2u : 0u) | (_WeaponHolsterInProgress ? 4u : 0u) |
 			(input.leftControllerAvailable ? 8u : 0u) | (input.rightControllerAvailable ? 16u : 0u) |
-			(s_leftHand.anchorAvailable ? 32u : 0u) | (s_rightHand.anchorAvailable ? 64u : 0u) |
+			(gLeftHand.anchorAvailable ? 32u : 0u) | (gRightHand.anchorAvailable ? 64u : 0u) |
 			(input.scopeOpen ? 128u : 0u);
 		if (inputGates != s_tracedInputGates) {
 			_MESSAGE("Holster input gates: config=%d gameStopped=%d holsterInProgress=%d controllers L=%d R=%d anchors L=%d R=%d scope=%d",
@@ -186,8 +212,8 @@ namespace Holsters {
 				(inputGates & 16u) != 0, (inputGates & 32u) != 0, (inputGates & 64u) != 0, (inputGates & 128u) != 0);
 			s_tracedInputGates = inputGates;
 		}
-		TraceButtonEdge(s_leftHand, true, input.leftHolsterHeld, leftPhaseBefore, leftDecision, leftFacts);
-		TraceButtonEdge(s_rightHand, false, input.rightHolsterHeld, rightPhaseBefore, rightDecision, rightFacts);
+		TraceButtonEdge(gLeftHand, true, input.leftHolsterHeld, leftPhaseBefore, leftDecision, leftFacts);
+		TraceButtonEdge(gRightHand, false, input.rightHolsterHeld, rightPhaseBefore, rightDecision, rightFacts);
 
 		// Where each hand's holster button state comes from: ROCK's raw
 		// read, or the game's controller read (which ROCK blanks for a
@@ -202,7 +228,7 @@ namespace Holsters {
 					(static_cast<std::uint32_t>(read.status & 0xFF) << 4) | (read.available ? 0x8u : 0u) | (read.reason & 0x7u);
 				if (source != s_tracedButtonSource[index]) {
 					_MESSAGE("[%s] Holster button read for the %s hand: source=%s owner=%d status=%d available=%d reason=%u rawHeld=%d gameHeld=%d",
-						TraceStamp().text, isLeft ? "left" : "right",
+						TraceTime(), isLeft ? "left" : "right",
 						read.owner && read.status == 0 && read.available ? "rock-raw" : "game",
 						read.owner ? 1 : 0, read.status, read.available ? 1 : 0, read.reason, read.held ? 1 : 0,
 						(isLeft ? input.leftGameHeld : input.rightGameHeld) ? 1 : 0);
@@ -215,25 +241,25 @@ namespace Holsters {
 		// what a dead holster would hide (zones never entered, the button
 		// never seen, ROCK inactive, the skeleton the zones follow).
 		++s_heartbeatFrames;
-		if (s_leftHand.zone != Interaction::kNoSlot) {
+		if (gLeftHand.zone != Interaction::kNoSlot) {
 			++s_heartbeatZoneFrames[0];
 		}
-		if (s_rightHand.zone != Interaction::kNoSlot) {
+		if (gRightHand.zone != Interaction::kNoSlot) {
 			++s_heartbeatZoneFrames[1];
 		}
 		s_heartbeatElapsed += gFrameSeconds;
 		if (s_heartbeatElapsed >= kHeartbeatSeconds) {
 			const void* currentRoot = (*g_player)->unkF0 ? (*g_player)->unkF0->rootNode : nullptr;
 			_MESSAGE("[%s] Holster heartbeat: frames=%u zoneFrames L=%u R=%u rock bound=%d active=%d gates=0x%02X root=%p resolvedRoot=%p tree=%p transforms=%d holsters=%u L[anchor=%d nearest=%u dist=%.1f radius=%.1f held=%d raw=%d/%d/%u phase=%s holds=%d canReceive=%d] R[anchor=%d nearest=%u dist=%.1f radius=%.1f held=%d raw=%d/%d/%u phase=%s holds=%d canReceive=%d]",
-				TraceStamp().text, s_heartbeatFrames, s_heartbeatZoneFrames[0], s_heartbeatZoneFrames[1],
+				TraceTime(), s_heartbeatFrames, s_heartbeatZoneFrames[0], s_heartbeatZoneFrames[1],
 				Rock::IsBound() ? 1 : 0, Rock::IsActive() ? 1 : 0, inputGates, currentRoot, gResolvedRoot,
 				gResolvedBoneTree, gResolvedTransforms, static_cast<unsigned>(HolsterRegisteredObjects.size()),
-				s_leftHand.anchorAvailable ? 1 : 0, s_leftHand.nearestSlot, s_leftHand.nearestDistance, s_leftHand.nearestRadius,
+				gLeftHand.anchorAvailable ? 1 : 0, gLeftHand.trace.nearestSlot, gLeftHand.trace.nearestDistance, gLeftHand.trace.nearestRadius,
 				input.leftHolsterHeld ? 1 : 0, buttonReads[0].status, buttonReads[0].available ? 1 : 0, buttonReads[0].reason,
-				GesturePhaseName(s_leftHand.gesture.Phase()), leftFacts.holds ? 1 : 0, leftFacts.canReceive ? 1 : 0,
-				s_rightHand.anchorAvailable ? 1 : 0, s_rightHand.nearestSlot, s_rightHand.nearestDistance, s_rightHand.nearestRadius,
+				GesturePhaseName(gLeftHand.gesture.Phase()), leftFacts.holds ? 1 : 0, leftFacts.canReceive ? 1 : 0,
+				gRightHand.anchorAvailable ? 1 : 0, gRightHand.trace.nearestSlot, gRightHand.trace.nearestDistance, gRightHand.trace.nearestRadius,
 				input.rightHolsterHeld ? 1 : 0, buttonReads[1].status, buttonReads[1].available ? 1 : 0, buttonReads[1].reason,
-				GesturePhaseName(s_rightHand.gesture.Phase()), rightFacts.holds ? 1 : 0, rightFacts.canReceive ? 1 : 0);
+				GesturePhaseName(gRightHand.gesture.Phase()), rightFacts.holds ? 1 : 0, rightFacts.canReceive ? 1 : 0);
 			s_heartbeatElapsed = 0.0F;
 			s_heartbeatFrames = 0;
 			s_heartbeatZoneFrames[0] = s_heartbeatZoneFrames[1] = 0;

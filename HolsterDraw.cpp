@@ -12,7 +12,7 @@ namespace Holsters {
 	// Stand-ins and learned grips live in the hand's controller frame,
 	// where ROCK places the real weapon; the hand bone moves between an
 	// open hand and a grip, so a pose kept against it lands off target.
-	NiNode* HandNode(const bool isLeft)
+	NiNode* HandNode(bool isLeft)
 	{
 		return static_cast<NiNode*>(NativeEquipment::WandNode(isLeft));
 	}
@@ -38,7 +38,7 @@ namespace Holsters {
 		return true;
 	}
 
-	bool RealWeaponVisible(const bool isLeft, const UInt32 formId)
+	bool RealWeaponVisible(bool isLeft, UInt32 formId)
 	{
 		const HandWeaponFacts facts = GetHandWeaponFacts(isLeft);
 		if (!facts.holds || facts.formId != formId) {
@@ -112,7 +112,7 @@ namespace Holsters {
 		if (!transfer.inHand) {
 			return;
 		}
-		auto& handoff = s_handoffs[transfer.isLeft ? 1 : 0];
+		HandHandoff& handoff = GetHand(transfer.isLeft).handoff;
 		releaseWeaponClone(handoff.clone);
 		handoff.clone = transfer.inHand;
 		handoff.formId = transfer.formId;
@@ -123,33 +123,37 @@ namespace Holsters {
 		transfer.inHand = nullptr;
 	}
 
+	static void ServiceHandoff(HandHandoff& handoff, bool isLeft, Clock::time_point now)
+	{
+		if (!handoff.clone) {
+			return;
+		}
+		bool shown;
+		if (handoff.weaponSlotKnown && Rock::IsBound()) {
+			shown = Rock::WeaponShown(handoff.weaponSlot, handoff.formId);
+		} else {
+			shown = RealWeaponVisible(isLeft, handoff.formId);
+		}
+		if (shown) {
+			releaseWeaponClone(handoff.clone);
+		} else if (now > handoff.deadline) {
+			_MESSAGE("Holster draw stand-in in the %s hand released before the real weapon showed",
+				isLeft ? "left" : "right");
+			releaseWeaponClone(handoff.clone);
+		}
+	}
+
 	void ServiceHandoffs()
 	{
 		const auto now = Clock::now();
-		for (int index = 0; index < 2; ++index) {
-			auto& handoff = s_handoffs[index];
-			if (!handoff.clone) {
-				continue;
-			}
-			const bool isLeft = index == 1;
-			const bool shown = handoff.weaponSlotKnown && Rock::IsBound() ?
-				Rock::WeaponShown(handoff.weaponSlot, handoff.formId) :
-				RealWeaponVisible(isLeft, handoff.formId);
-			if (shown) {
-				releaseWeaponClone(handoff.clone);
-			} else if (now > handoff.deadline) {
-				_MESSAGE("Holster draw stand-in in the %s hand released before the real weapon showed",
-					isLeft ? "left" : "right");
-				releaseWeaponClone(handoff.clone);
-			}
-		}
+		ServiceHandoff(gRightHand.handoff, false, now);
+		ServiceHandoff(gLeftHand.handoff, true, now);
 	}
 
 	void ReleaseHandoffs()
 	{
-		for (auto& handoff : s_handoffs) {
-			releaseWeaponClone(handoff.clone);
-		}
+		releaseWeaponClone(gRightHand.handoff.clone);
+		releaseWeaponClone(gLeftHand.handoff.clone);
 	}
 
 	// ROCK keeps every holstered weapon's animations loaded, so a draw
@@ -211,9 +215,9 @@ namespace Holsters {
 
 	// The stored weapon goes into the hand. With swap, the hand's weapon
 	// takes the slot once the stored one is in the hand.
-	bool BeginDraw(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts, const bool swap)
+	bool BeginDraw(bool isLeft, UInt32 slot, const HandWeaponFacts& facts, bool swap)
 	{
-		auto& transfer = TransferFor(isLeft);
+		auto& transfer = GetHand(isLeft).transfer;
 		transfer = {};
 		transfer.active = true;
 		transfer.isLeft = isLeft;
@@ -365,76 +369,82 @@ namespace Holsters {
 		}
 	}
 
+	static void ServiceTransfer(HandTransfer& transfer, Clock::time_point now)
+	{
+		if (!transfer.active) {
+			return;
+		}
+		// The equip was not accepted yet: ask again until the deadline.
+		if (!transfer.requested) {
+			if (now > transfer.deadline) {
+				AbortTransfer(transfer, "the equip was never admitted");
+			} else if (!RequestDraw(transfer)) {
+				AbortTransfer(transfer, "the equip was refused");
+			}
+			return;
+		}
+		// Hide the holster's copy as soon as the real weapon shows in the hand.
+		if (transfer.inHand && transfer.inHand->WeapMesh && RealWeaponVisible(transfer.isLeft, transfer.formId)) {
+			transfer.inHand->WeapMesh->flags |= 0x1;
+		}
+		if (Rock::IsBound()) {
+			std::uint32_t weaponSlot = 0;
+			const Rock::EquipProgress progress = Rock::PollEquip(transfer.command, &weaponSlot);
+			if (progress == Rock::EquipProgress::kPending) {
+				TrackOutgoing(transfer);
+			} else if (progress == Rock::EquipProgress::kPresented) {
+				HidePresentedDisplay(transfer);
+				RevealOutgoing(transfer);
+			} else if (progress == Rock::EquipProgress::kSucceeded) {
+				transfer.weaponSlot = weaponSlot;
+				transfer.weaponSlotKnown = true;
+				CompleteTransfer(transfer);
+				return;
+			} else if (progress == Rock::EquipProgress::kFailed) {
+				transfer.command = 0;
+				AbortTransfer(transfer, "ROCK reported the equip failed");
+				return;
+			}
+		} else {
+			TrackOutgoing(transfer);
+			const auto equipped = NativeEquipment::ReadEquippedWeapons()[0];
+			if (equipped.formId == transfer.formId) {
+				CompleteTransfer(transfer);
+				return;
+			}
+		}
+		// An equip ROCK accepted ends with ROCK's own result (the game may
+		// already have equipped it, so it cannot be cancelled). The deadline
+		// only applies without ROCK.
+		if (transfer.active && !Rock::IsBound() && now > transfer.deadline) {
+			AbortTransfer(transfer, "timed out");
+		}
+	}
+
 	void ServiceTransfers()
 	{
 		const auto now = Clock::now();
-		for (auto& transfer : s_transfers) {
-			if (!transfer.active) {
-				continue;
-			}
-			if (!transfer.requested) {
-				if (now > transfer.deadline) {
-					AbortTransfer(transfer, "the equip was never admitted");
-				} else if (!RequestDraw(transfer)) {
-					AbortTransfer(transfer, "the equip was refused");
-				}
-				continue;
-			}
-			if (transfer.inHand && transfer.inHand->WeapMesh && RealWeaponVisible(transfer.isLeft, transfer.formId)) {
-				transfer.inHand->WeapMesh->flags |= 0x1;
-			}
-			if (Rock::IsBound()) {
-				std::uint32_t weaponSlot = 0;
-				const auto progress = Rock::PollEquip(transfer.command, &weaponSlot);
-				if (progress == Rock::EquipProgress::kPending) {
-					TrackOutgoing(transfer);
-				}
-				switch (progress) {
-				case Rock::EquipProgress::kPresented:
-					HidePresentedDisplay(transfer);
-					RevealOutgoing(transfer);
-					break;
-				case Rock::EquipProgress::kSucceeded:
-					transfer.weaponSlot = weaponSlot;
-					transfer.weaponSlotKnown = true;
-					CompleteTransfer(transfer);
-					continue;
-				case Rock::EquipProgress::kFailed:
-					transfer.command = 0;
-					AbortTransfer(transfer, "ROCK reported the equip failed");
-					continue;
-				case Rock::EquipProgress::kPending:
-					break;
-				}
-			} else {
-				TrackOutgoing(transfer);
-				const auto equipped = NativeEquipment::ReadEquippedWeapons()[0];
-				if (equipped.formId == transfer.formId) {
-					CompleteTransfer(transfer);
-					continue;
-				}
-			}
-			// An equip ROCK accepted ends with ROCK's own result (it may
-			// already be committed natively, so it cannot be cancelled);
-			// the deadline guards only the path without ROCK.
-			if (transfer.active && !Rock::IsBound() && now > transfer.deadline) {
-				AbortTransfer(transfer, "timed out");
-			}
+		ServiceTransfer(gRightHand.transfer, now);
+		ServiceTransfer(gLeftHand.transfer, now);
+	}
+
+	static void CancelTransfer(HandTransfer& transfer)
+	{
+		if (!transfer.active) {
+			return;
 		}
+		if (transfer.command) {
+			Rock::CancelEquip(transfer.command);
+		}
+		releaseWeaponClone(transfer.outgoing);
+		releaseWeaponClone(transfer.inHand);
+		transfer = {};
 	}
 
 	void CancelTransfers()
 	{
-		for (auto& transfer : s_transfers) {
-			if (transfer.active) {
-				if (transfer.command) {
-					Rock::CancelEquip(transfer.command);
-				}
-				releaseWeaponClone(transfer.outgoing);
-				releaseWeaponClone(transfer.inHand);
-				transfer = {};
-			}
-		}
+		CancelTransfer(gRightHand.transfer);
+		CancelTransfer(gLeftHand.transfer);
 	}
 
 	void AdvanceBlend(MyWeapon& weapon)
@@ -461,7 +471,7 @@ namespace Holsters {
 	// holds still. ROCK usually reveals the real weapon before the ease
 	// ends, so each frame tells ROCK where the stand-in is and the real
 	// weapon continues from there instead of appearing at the aim.
-	void AdvanceStandIn(MyWeapon& weapon, const bool isLeft, const std::uint64_t command)
+	void AdvanceStandIn(MyWeapon& weapon, bool isLeft, std::uint64_t command)
 	{
 		NiNode* hand = HandNode(isLeft);
 		Rock::WeaponWorld aim{};
@@ -505,6 +515,16 @@ namespace Holsters {
 		}
 	}
 
+	static void AdvanceTransferDisplays(HandTransfer& transfer)
+	{
+		if (transfer.outgoing) {
+			AdvanceBlend(*transfer.outgoing);
+		}
+		if (transfer.inHand) {
+			AdvanceStandIn(*transfer.inHand, transfer.isLeft, transfer.requested ? transfer.command : 0);
+		}
+	}
+
 	void UpdateWeaponBlends()
 	{
 		for (auto& [slot, weapon] : WeaponRegisteredObjects) {
@@ -513,18 +533,13 @@ namespace Holsters {
 				AdvanceBlend(*weapon);
 			}
 		}
-		for (auto& transfer : s_transfers) {
-			if (transfer.outgoing) {
-				AdvanceBlend(*transfer.outgoing);
-			}
-			if (transfer.inHand) {
-				AdvanceStandIn(*transfer.inHand, transfer.isLeft, transfer.requested ? transfer.command : 0);
-			}
+		AdvanceTransferDisplays(gRightHand.transfer);
+		AdvanceTransferDisplays(gLeftHand.transfer);
+		if (gRightHand.handoff.clone) {
+			AdvanceStandIn(*gRightHand.handoff.clone, false, gRightHand.handoff.command);
 		}
-		for (int index = 0; index < 2; ++index) {
-			if (s_handoffs[index].clone) {
-				AdvanceStandIn(*s_handoffs[index].clone, index == 1, s_handoffs[index].command);
-			}
+		if (gLeftHand.handoff.clone) {
+			AdvanceStandIn(*gLeftHand.handoff.clone, true, gLeftHand.handoff.command);
 		}
 	}
 

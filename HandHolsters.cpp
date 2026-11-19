@@ -21,51 +21,25 @@ namespace Holsters {
 		bool floorCaptured{};
 	};
 
-	HandInteractionRuntime s_leftHand;
+	HandState gLeftHand;
+	HandState gRightHand;
 
-	HandInteractionRuntime s_rightHand;
-
-	GrabSettingSnapshot s_grabSettingSnapshot;
-
-	bool s_activationSuppressed = false;
-
-	std::array<HandTransfer, 2> s_transfers{};   // [0] right, [1] left
-
-	std::array<HandHandoff, 2> s_handoffs{};     // [0] right, [1] left
-
-	std::array<HandDeposit, 2> s_deposits{};     // [0] right, [1] left
-
-	std::array<ThrowableDraw, 2> s_throwableDraws{};  // [0] right, [1] left
-
-	HandTransfer& TransferFor(const bool isLeft)
+	HandState& GetHand(bool isLeft)
 	{
-		return s_transfers[isLeft ? 1 : 0];
+		return isLeft ? gLeftHand : gRightHand;
 	}
 
-	HandDeposit& DepositFor(const bool isLeft)
-	{
-		return s_deposits[isLeft ? 1 : 0];
-	}
+	static GrabSettingSnapshot s_grabSettingSnapshot;
+	static bool s_activationSuppressed = false;
 
-	ThrowableDraw& ThrowableDrawFor(const bool isLeft)
-	{
-		return s_throwableDraws[isLeft ? 1 : 0];
-	}
-
-	void PulseHand(const bool isLeft)
+	void PulseHand(bool isLeft)
 	{
 		if (ghapticsEnabled && VRHook::g_vrHook) {
 			VRHook::g_vrHook->StartHaptics(isLeft ? 1 : 2, kHolsterHapticSeconds, c_hapticIntensity);
 		}
 	}
 
-	const HandInteractionRuntime& GetHandRuntime(
-		const bool isLeft)
-	{
-		return isLeft ? s_leftHand : s_rightHand;
-	}
-
-	void SendActivationEvent(const bool suppress)
+	void SendActivationEvent(bool suppress)
 	{
 		SInt32 eventType = suppress ?
 			HolsterEvent_DisableActivate :
@@ -134,7 +108,7 @@ namespace Holsters {
 		s_grabSettingSnapshot = {};
 	}
 
-	void SetActivationSuppressed(const bool suppress)
+	void SetActivationSuppressed(bool suppress)
 	{
 		if (suppress == s_activationSuppressed) {
 			return;
@@ -151,7 +125,7 @@ namespace Holsters {
 
 	// Whether the slot's tagged weapon is a throwable. The inventory is
 	// read only when the slot's tag changes, never per frame.
-	bool SlotHoldsThrowable(const UInt32 slot)
+	bool SlotHoldsThrowable(UInt32 slot)
 	{
 		static std::array<std::string, kMaximumHolsterSlots + 1> s_names{};
 		static std::array<bool, kMaximumHolsterSlots + 1> s_throwable{};
@@ -185,7 +159,7 @@ namespace Holsters {
 		return false;
 	}
 
-	HandWeaponFacts GetHandWeaponFacts(const bool isLeft)
+	HandWeaponFacts GetHandWeaponFacts(bool isLeft)
 	{
 		HandWeaponFacts facts{};
 		if (Rock::IsBound()) {
@@ -225,77 +199,69 @@ namespace Holsters {
 		return facts;
 	}
 
-	bool SlotHasTransfer(const UInt32 slot)
+	static bool HandWorksSlot(const HandState& hand, UInt32 slot)
 	{
-		for (const auto& transfer : s_transfers) {
-			if (transfer.active && transfer.slot == slot) {
-				return true;
-			}
-		}
-		for (const auto& draw : s_throwableDraws) {
-			if (draw.active && draw.slot == slot) {
-				return true;
-			}
-		}
-		return false;
+		return (hand.transfer.active && hand.transfer.slot == slot) ||
+			(hand.throwableDraw.active && hand.throwableDraw.slot == slot);
+	}
+
+	bool SlotHasTransfer(UInt32 slot)
+	{
+		return HandWorksSlot(gRightHand, slot) || HandWorksSlot(gLeftHand, slot);
 	}
 
 	std::array<bool, 8> BusySlots()
 	{
 		std::array<bool, 8> busy{};
-		for (const auto& transfer : s_transfers) {
-			if (transfer.active && transfer.slot < busy.size()) {
-				busy[transfer.slot] = true;
-			}
-		}
-		for (const auto& draw : s_throwableDraws) {
-			if (draw.active && draw.slot < busy.size()) {
-				busy[draw.slot] = true;
-			}
+		for (UInt32 slot = 0; slot < busy.size(); slot++) {
+			busy[slot] = SlotHasTransfer(slot);
 		}
 		return busy;
 	}
 
-	HolsterAction DecideAction(
-		const Interaction::GestureActionKind kind,
-		const UInt32 slot,
-		const bool isLeft,
-		const HandWeaponFacts& facts)
+	HolsterAction DecideAction(Interaction::GestureActionKind kind, UInt32 slot, bool isLeft, const HandWeaponFacts& facts)
 	{
+		const HandState& hand = GetHand(isLeft);
 		if (!facts.known || !SlotAvailable(slot) ||
-			TransferFor(isLeft).active || ThrowableDrawFor(isLeft).active || SlotHasTransfer(slot)) {
-			return HolsterAction::kNone;
+			hand.transfer.active || hand.throwableDraw.active || SlotHasTransfer(slot)) {
+			return HolsterAction_None;
 		}
 		const bool occupied = holsteredWeapNames[slot] != "Empty";
-		// A throwable comes out only through ROCK, into a free hand; a
-		// held weapon is never swapped for it.
+		const bool handFree = !facts.holds && facts.canReceive;
+
+		// A grenade comes out only through ROCK and only into a free hand.
+		// A held weapon is never swapped for it.
 		if (occupied && SlotHoldsThrowable(slot)) {
-			return kind != Interaction::GestureActionKind::kNone && Rock::IsActive() &&
-					!facts.holds && facts.canReceive ?
-				HolsterAction::kDraw :
-				HolsterAction::kNone;
-		}
-		switch (kind) {
-		case Interaction::GestureActionKind::kPressDraw:
-			return occupied && !facts.holds && facts.canReceive ?
-				HolsterAction::kDraw :
-				HolsterAction::kNone;
-		case Interaction::GestureActionKind::kReleaseInZone:
-			if (facts.holds) {
-				// A two-handed weapon is never stashed: the release is
-				// ROCK's ordinary let-go.
-				if (facts.supported) {
-					return HolsterAction::kNone;
-				}
-				return occupied ? HolsterAction::kSwap : HolsterAction::kHolster;
+			if (kind != Interaction::GestureActionKind::kNone && Rock::IsActive() && handFree) {
+				return HolsterAction_Draw;
 			}
-			return occupied && facts.canReceive ?
-				HolsterAction::kDraw :
-				HolsterAction::kNone;
-		case Interaction::GestureActionKind::kNone:
-			break;
+			return HolsterAction_None;
 		}
-		return HolsterAction::kNone;
+
+		if (kind == Interaction::GestureActionKind::kPressDraw) {
+			if (occupied && handFree) {
+				return HolsterAction_Draw;
+			}
+			return HolsterAction_None;
+		}
+
+		if (kind == Interaction::GestureActionKind::kReleaseInZone) {
+			if (facts.holds) {
+				// A weapon held in both hands is never holstered: the
+				// release only lets go of it.
+				if (facts.supported) {
+					return HolsterAction_None;
+				}
+				if (occupied) {
+					return HolsterAction_Swap;
+				}
+				return HolsterAction_Holster;
+			}
+			if (occupied && facts.canReceive) {
+				return HolsterAction_Draw;
+			}
+		}
+		return HolsterAction_None;
 	}
 
 	// Where the hand's weapon model is on screen now. The first weapon's
@@ -350,7 +316,7 @@ namespace Holsters {
 	// The hand's weapon goes into the empty slot. The clone appears where
 	// the hand held the weapon in the frame the weapon leaves the hand, so
 	// it never disappears, then eases into the holster.
-	bool HolsterHandWeapon(const bool isLeft, const UInt32 slot, const HandWeaponFacts& facts)
+	bool HolsterHandWeapon(bool isLeft, UInt32 slot, const HandWeaponFacts& facts)
 	{
 		const WeaponStack stack = FindHandStack(facts);
 		if (!stack.found) {
@@ -387,13 +353,13 @@ namespace Holsters {
 		return true;
 	}
 
-	TESObjectREFR* LookupReference(const std::uint32_t formId)
+	TESObjectREFR* LookupReference(std::uint32_t formId)
 	{
 		TESForm* form = formId ? LookupFormByID(formId) : nullptr;
 		return form ? DYNAMIC_CAST(form, TESForm, TESObjectREFR) : nullptr;
 	}
 
-	bool IsWeaponReference(const std::uint32_t formId)
+	bool IsWeaponReference(std::uint32_t formId)
 	{
 		const TESObjectREFR* reference = LookupReference(formId);
 		return reference && reference->baseForm && reference->baseForm->formType == kFormType_WEAP;
@@ -402,7 +368,7 @@ namespace Holsters {
 	// The reference's weapon goes into the empty slot: the display starts
 	// where the reference is shown, then the item is taken into the
 	// inventory and the slot is tagged with its inventory name.
-	bool DepositReference(const UInt32 slot, TESObjectREFR* reference)
+	bool DepositReference(UInt32 slot, TESObjectREFR* reference)
 	{
 		if (!reference || !SlotAvailable(slot) || holsteredWeapNames[slot] != "Empty" || SlotHasTransfer(slot)) {
 			return false;
@@ -455,9 +421,9 @@ namespace Holsters {
 	// Keeps the hand's claim on the loose weapon it holds while it is in
 	// an empty holster. A claim outlives ROCK's let-go by ROCK's claim
 	// reservation, which covers toggle grip letting go on the press.
-	void UpdateDepositClaim(const bool isLeft, const HandInteractionRuntime& hand, const bool held)
+	void UpdateDepositClaim(bool isLeft, const HandState& hand, bool held)
 	{
-		auto& deposit = DepositFor(isLeft);
+		auto& deposit = GetHand(isLeft).deposit;
 		if (deposit.committing) {
 			return;
 		}
@@ -491,9 +457,9 @@ namespace Holsters {
 	}
 
 	// A release in the claimed slot stores the loose weapon.
-	bool StartDeposit(const bool isLeft, const UInt32 slot)
+	bool StartDeposit(bool isLeft, UInt32 slot)
 	{
-		auto& deposit = DepositFor(isLeft);
+		auto& deposit = GetHand(isLeft).deposit;
 		if (!deposit.lease || deposit.committing || deposit.slot != slot) {
 			return false;
 		}
@@ -502,40 +468,42 @@ namespace Holsters {
 		return true;
 	}
 
+	static void ServiceDeposit(HandDeposit& deposit, bool isLeft)
+	{
+		if (!deposit.committing) {
+			return;
+		}
+		const auto result = Rock::CommitClaim(deposit.lease);
+		if (result == Rock::Result::kBusy && --deposit.framesLeft > 0) {
+			return;  // ROCK is still letting go; try again next frame
+		}
+		if (result == Rock::Result::kOk) {
+			if (DepositReference(deposit.slot, LookupReference(deposit.referenceFormId))) {
+				gCurHolster = deposit.slot;
+				PulseHand(isLeft);
+			}
+		} else {
+			_WARNING("Holster %u deposit of reference %08X from the %s hand abandoned: ROCK %s",
+				deposit.slot, deposit.referenceFormId, isLeft ? "left" : "right",
+				result == Rock::Result::kBusy ? "kept holding it" : "refused the commit");
+		}
+		ReleaseDeposit(deposit);
+	}
+
 	void ServiceDeposits()
 	{
-		for (const bool isLeft : { false, true }) {
-			auto& deposit = DepositFor(isLeft);
-			if (!deposit.committing) {
-				continue;
-			}
-			const auto result = Rock::CommitClaim(deposit.lease);
-			if (result == Rock::Result::kBusy && --deposit.framesLeft > 0) {
-				continue;
-			}
-			if (result == Rock::Result::kOk) {
-				if (DepositReference(deposit.slot, LookupReference(deposit.referenceFormId))) {
-					gCurHolster = deposit.slot;
-					PulseHand(isLeft);
-				}
-			} else {
-				_WARNING("Holster %u deposit of reference %08X from the %s hand abandoned: ROCK %s",
-					deposit.slot, deposit.referenceFormId, isLeft ? "left" : "right",
-					result == Rock::Result::kBusy ? "kept holding it" : "refused the commit");
-			}
-			ReleaseDeposit(deposit);
-		}
+		ServiceDeposit(gRightHand.deposit, false);
+		ServiceDeposit(gLeftHand.deposit, true);
 	}
 
 	void ReleaseDeposits()
 	{
-		for (auto& deposit : s_deposits) {
-			ReleaseDeposit(deposit);
-		}
+		ReleaseDeposit(gRightHand.deposit);
+		ReleaseDeposit(gLeftHand.deposit);
 	}
 
 	// A request ROCK reports busy is retried next frame until the deadline.
-	bool RequestThrowable(ThrowableDraw& draw, const bool isLeft)
+	bool RequestThrowable(ThrowableDraw& draw, bool isLeft)
 	{
 		std::uint64_t command = 0;
 		const auto result = Rock::RequestItemGrab(isLeft, draw.formId, command);
@@ -549,14 +517,14 @@ namespace Holsters {
 		return true;
 	}
 
-	bool BeginThrowableDraw(const bool isLeft, const UInt32 slot)
+	bool BeginThrowableDraw(bool isLeft, UInt32 slot)
 	{
 		const WeaponStack stored = FindStoredStack(holsteredWeapNames[slot]);
 		if (!stored.found || !IsThrowableWeapon(stored.weapon)) {
 			ReconcileHolsterTags(BusySlots());
 			return false;
 		}
-		auto& draw = ThrowableDrawFor(isLeft);
+		auto& draw = GetHand(isLeft).throwableDraw;
 		draw = {};
 		draw.active = true;
 		draw.slot = slot;
@@ -573,50 +541,49 @@ namespace Holsters {
 
 	// ROCK's admitted grab ends with its own result. The slot keeps its
 	// tag until no copy is left (ReconcileHolsterTags).
-	void ServiceThrowableDraws()
+	static void ServiceThrowableDraw(ThrowableDraw& draw, bool isLeft, Clock::time_point now)
 	{
-		const auto now = Clock::now();
-		for (const bool isLeft : { false, true }) {
-			auto& draw = ThrowableDrawFor(isLeft);
-			if (!draw.active) {
-				continue;
-			}
-			if (!draw.command) {
-				if (now > draw.deadline || !RequestThrowable(draw, isLeft)) {
-					_WARNING("Holster %u throwable draw of '%s' into the %s hand was never admitted",
-						draw.slot, draw.name.c_str(), isLeft ? "left" : "right");
-					draw = {};
-				}
-				continue;
-			}
-			switch (Rock::PollItemGrab(draw.command)) {
-			case Rock::EquipProgress::kSucceeded:
-				PulseHand(isLeft);
-				_MESSAGE("Holster %u drew '%s' into the %s hand", draw.slot, draw.name.c_str(), isLeft ? "left" : "right");
-				draw = {};
-				ReconcileHolsterTags(BusySlots());
-				break;
-			case Rock::EquipProgress::kFailed:
-				_WARNING("Holster %u throwable draw of '%s' into the %s hand failed in ROCK",
+		if (!draw.active) {
+			return;
+		}
+		if (!draw.command) {
+			if (now > draw.deadline || !RequestThrowable(draw, isLeft)) {
+				_WARNING("Holster %u throwable draw of '%s' into the %s hand was never admitted",
 					draw.slot, draw.name.c_str(), isLeft ? "left" : "right");
 				draw = {};
-				break;
-			default:
-				break;
 			}
+			return;
 		}
-	}
-
-	void CancelThrowableDraws()
-	{
-		for (auto& draw : s_throwableDraws) {
-			Rock::CancelItemGrab(draw.command);
+		const Rock::EquipProgress progress = Rock::PollItemGrab(draw.command);
+		if (progress == Rock::EquipProgress::kSucceeded) {
+			PulseHand(isLeft);
+			_MESSAGE("Holster %u drew '%s' into the %s hand", draw.slot, draw.name.c_str(), isLeft ? "left" : "right");
+			draw = {};
+			ReconcileHolsterTags(BusySlots());
+		} else if (progress == Rock::EquipProgress::kFailed) {
+			_WARNING("Holster %u throwable draw of '%s' into the %s hand failed in ROCK",
+				draw.slot, draw.name.c_str(), isLeft ? "left" : "right");
 			draw = {};
 		}
 	}
 
+	void ServiceThrowableDraws()
+	{
+		const auto now = Clock::now();
+		ServiceThrowableDraw(gRightHand.throwableDraw, false, now);
+		ServiceThrowableDraw(gLeftHand.throwableDraw, true, now);
+	}
+
+	void CancelThrowableDraws()
+	{
+		Rock::CancelItemGrab(gRightHand.throwableDraw.command);
+		gRightHand.throwableDraw = {};
+		Rock::CancelItemGrab(gLeftHand.throwableDraw.command);
+		gLeftHand.throwableDraw = {};
+	}
+
 	// A press that drew a throwable and stays in its holster empties it.
-	void ServiceThrowableHold(HandInteractionRuntime& hand, const bool isLeft, const bool held)
+	void ServiceThrowableHold(HandState& hand, bool isLeft, bool held)
 	{
 		if (!hand.throwableHoldSlot) {
 			return;
@@ -643,14 +610,14 @@ namespace Holsters {
 
 	// ROCK must not grab, drop, stash or act on the holster button with a
 	// hand working a holster, including a press that has left the zone.
-	void ReserveRockInput(const bool isLeft, const HandInteractionRuntime& hand, const bool actionPossible)
+	void ReserveRockInput(bool isLeft, const HandState& hand, bool actionPossible)
 	{
 		if (!Rock::IsBound()) {
 			return;
 		}
 		// A loose weapon going into a shoulder holster must not go into
 		// ROCK's own shoulder stash instead.
-		const auto& deposit = DepositFor(isLeft);
+		const auto& deposit = GetHand(isLeft).deposit;
 		if (deposit.lease && (deposit.slot == 1 || deposit.slot == 2)) {
 			Rock::ReserveHand(isLeft, false, 0, true);
 		}
@@ -690,20 +657,20 @@ namespace Holsters {
 	static Interaction::GestureDecision s_leftDecision;
 	static Interaction::GestureDecision s_rightDecision;
 
-	static bool DrawPossible(const HandInteractionRuntime& hand, const bool isLeft, const HandWeaponFacts& facts)
+	static bool DrawPossible(const HandState& hand, bool isLeft, const HandWeaponFacts& facts)
 	{
-		return DecideAction(Interaction::GestureActionKind::kPressDraw, hand.zone, isLeft, facts) != HolsterAction::kNone;
+		return DecideAction(Interaction::GestureActionKind::kPressDraw, hand.zone, isLeft, facts) != HolsterAction_None;
 	}
 
-	static bool ReleasePossible(const HandInteractionRuntime& hand, const bool isLeft, const HandWeaponFacts& facts)
+	static bool ReleasePossible(const HandState& hand, bool isLeft, const HandWeaponFacts& facts)
 	{
-		return DecideAction(Interaction::GestureActionKind::kReleaseInZone, hand.zone, isLeft, facts) != HolsterAction::kNone;
+		return DecideAction(Interaction::GestureActionKind::kReleaseInZone, hand.zone, isLeft, facts) != HolsterAction_None;
 	}
 
 	// A press draws on its frame or later in the same hold (the gesture
 	// keeps it to the pressed slot).
-	static bool CanDrawNow(const HandInteractionRuntime& hand, const bool isLeft,
-		const bool controllerAvailable, const bool held, const HandWeaponFacts& facts)
+	static bool CanDrawNow(const HandState& hand, bool isLeft,
+		bool controllerAvailable, bool held, const HandWeaponFacts& facts)
 	{
 		const auto phase = hand.gesture.Phase();
 		const bool drawPhase = phase == Interaction::GesturePhase::kIdle || phase == Interaction::GesturePhase::kHeld;
@@ -716,7 +683,7 @@ namespace Holsters {
 	}
 
 	// What the current press of this hand's holster button is allowed to do.
-	static void UpdatePressState(HandInteractionRuntime& hand, const bool isLeft, const bool held, const HandWeaponFacts& facts)
+	static void UpdatePressState(HandState& hand, bool isLeft, bool held, const HandWeaponFacts& facts)
 	{
 		const bool twoHandedNow = facts.supported || facts.supports;
 		const bool twoHandedBefore = hand.twoHandedLastFrame;
@@ -759,35 +726,36 @@ namespace Holsters {
 			!_WeaponHolsterInProgress;
 		s_leftFacts = GetHandWeaponFacts(true);
 		s_rightFacts = GetHandWeaponFacts(false);
-		const bool leftCanDraw = CanDrawNow(s_leftHand, true, input.leftControllerAvailable, input.leftHolsterHeld, s_leftFacts);
-		const bool rightCanDraw = CanDrawNow(s_rightHand, false, input.rightControllerAvailable, input.rightHolsterHeld, s_rightFacts);
-		const auto leftPhaseBefore = s_leftHand.gesture.Phase();
-		const auto rightPhaseBefore = s_rightHand.gesture.Phase();
-		UpdatePressState(s_leftHand, true, input.leftHolsterHeld, s_leftFacts);
-		UpdatePressState(s_rightHand, false, input.rightHolsterHeld, s_rightFacts);
+		const bool leftCanDraw = CanDrawNow(gLeftHand, true, input.leftControllerAvailable, input.leftHolsterHeld, s_leftFacts);
+		const bool rightCanDraw = CanDrawNow(gRightHand, false, input.rightControllerAvailable, input.rightHolsterHeld, s_rightFacts);
+		const auto leftPhaseBefore = gLeftHand.gesture.Phase();
+		const auto rightPhaseBefore = gRightHand.gesture.Phase();
+		UpdatePressState(gLeftHand, true, input.leftHolsterHeld, s_leftFacts);
+		UpdatePressState(gRightHand, false, input.rightHolsterHeld, s_rightFacts);
 		if (s_gameplayEnabled) {
-			UpdateDepositClaim(true, s_leftHand, input.leftHolsterHeld);
-			UpdateDepositClaim(false, s_rightHand, input.rightHolsterHeld);
+			UpdateDepositClaim(true, gLeftHand, input.leftHolsterHeld);
+			UpdateDepositClaim(false, gRightHand, input.rightHolsterHeld);
 		} else {
-			for (auto& deposit : s_deposits) {
-				if (!deposit.committing) {
-					ReleaseDeposit(deposit);
-				}
+			if (!gRightHand.deposit.committing) {
+				ReleaseDeposit(gRightHand.deposit);
+			}
+			if (!gLeftHand.deposit.committing) {
+				ReleaseDeposit(gLeftHand.deposit);
 			}
 		}
-		s_leftDecision = s_leftHand.gesture.Update({
-			input.leftControllerAvailable && s_leftHand.anchorAvailable,
+		s_leftDecision = gLeftHand.gesture.Update({
+			input.leftControllerAvailable && gLeftHand.anchorAvailable,
 			s_gameplayEnabled,
 			input.leftHolsterHeld,
-			s_leftHand.zone,
-			leftCanDraw && !s_leftHand.pressTwoHanded
+			gLeftHand.zone,
+			leftCanDraw && !gLeftHand.pressTwoHanded
 		});
-		s_rightDecision = s_rightHand.gesture.Update({
-			input.rightControllerAvailable && s_rightHand.anchorAvailable,
+		s_rightDecision = gRightHand.gesture.Update({
+			input.rightControllerAvailable && gRightHand.anchorAvailable,
 			s_gameplayEnabled,
 			input.rightHolsterHeld,
-			s_rightHand.zone,
-			rightCanDraw && !s_rightHand.pressTwoHanded
+			gRightHand.zone,
+			rightCanDraw && !gRightHand.pressTwoHanded
 		});
 
 		TraceHandFrame(input, leftPhaseBefore, rightPhaseBefore, s_leftDecision, s_rightDecision, s_leftFacts, s_rightFacts);
@@ -795,20 +763,20 @@ namespace Holsters {
 		SetActivationSuppressed(
 			c_ActivationDisabled &&
 			s_gameplayEnabled &&
-			(s_leftHand.gesture.IsHoldingCandidate() ||
-				s_rightHand.gesture.IsHoldingCandidate()));
+			(gLeftHand.gesture.IsHoldingCandidate() ||
+				gRightHand.gesture.IsHoldingCandidate()));
 		if (s_gameplayEnabled) {
-			ReserveRockInput(true, s_leftHand,
-				s_leftHand.zone != Interaction::kNoSlot &&
-					(ReleasePossible(s_leftHand, true, s_leftFacts) || DrawPossible(s_leftHand, true, s_leftFacts)));
-			ReserveRockInput(false, s_rightHand,
-				s_rightHand.zone != Interaction::kNoSlot &&
-					(ReleasePossible(s_rightHand, false, s_rightFacts) || DrawPossible(s_rightHand, false, s_rightFacts)));
+			ReserveRockInput(true, gLeftHand,
+				gLeftHand.zone != Interaction::kNoSlot &&
+					(ReleasePossible(gLeftHand, true, s_leftFacts) || DrawPossible(gLeftHand, true, s_leftFacts)));
+			ReserveRockInput(false, gRightHand,
+				gRightHand.zone != Interaction::kNoSlot &&
+					(ReleasePossible(gRightHand, false, s_rightFacts) || DrawPossible(gRightHand, false, s_rightFacts)));
 		}
 	}
 
 	// Carries out what one hand's gesture decided this frame.
-	static void RunHandAction(HandInteractionRuntime& hand, const bool isLeft, const Interaction::GestureDecision& decision)
+	static void RunHandAction(HandState& hand, bool isLeft, const Interaction::GestureDecision& decision)
 	{
 		if (!decision.HasAction()) {
 			return;
@@ -826,15 +794,15 @@ namespace Holsters {
 		// does not draw either: the hand is free by its release.
 		const bool twoHandedLetGo = decision.Kind() == Interaction::GestureActionKind::kReleaseInZone &&
 			hand.pressTwoHanded;
-		if (action == HolsterAction::kDraw && twoHandedLetGo) {
-			action = HolsterAction::kNone;
+		if (action == HolsterAction_Draw && twoHandedLetGo) {
+			action = HolsterAction_None;
 		}
 		bool acted = false;
 		switch (action) {
-		case HolsterAction::kHolster:
+		case HolsterAction_Holster:
 			acted = HolsterHandWeapon(isLeft, slot, facts);
 			break;
-		case HolsterAction::kDraw: {
+		case HolsterAction_Draw: {
 			if (KabutoBlocksDraw()) {
 				break;
 			}
@@ -853,22 +821,22 @@ namespace Holsters {
 				_MESSAGE("Holster %u draw by the %s hand started on %s, %lld ms after the press",
 					slot, isLeft ? "left" : "right", onPress ? "press" : "release",
 					static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-						Clock::now() - hand.pressedAt).count()));
+						Clock::now() - hand.trace.pressedAt).count()));
 			}
 			break;
 		}
-		case HolsterAction::kSwap:
+		case HolsterAction_Swap:
 			if (!KabutoBlocksDraw()) {
 				acted = BeginDraw(isLeft, slot, facts, true);
 			}
 			break;
-		case HolsterAction::kNone:
+		case HolsterAction_None:
 			if (slot != Interaction::kNoSlot) {
 				_MESSAGE("Holster %u %s by the %s hand did nothing: occupied=%d known=%d holds=%d twoHanded=%d twoHandedPress=%d canReceive=%d handBusy=%d slotBusy=%d",
 					slot, decision.Kind() == Interaction::GestureActionKind::kPressDraw ? "press" : "release",
 					isLeft ? "left" : "right", holsteredWeapNames[slot] != "Empty" ? 1 : 0,
 					facts.known, facts.holds, facts.supported, twoHandedLetGo, facts.canReceive,
-					TransferFor(isLeft).active ? 1 : 0, SlotHasTransfer(slot) ? 1 : 0);
+					GetHand(isLeft).transfer.active ? 1 : 0, SlotHasTransfer(slot) ? 1 : 0);
 			}
 			break;
 		}
@@ -887,24 +855,26 @@ namespace Holsters {
 		}
 		// Each hand acts on its own holster in the same frame; a
 		// hand-directed draw leaves the other hand's weapon in place.
-		RunHandAction(s_leftHand, true, s_leftDecision);
-		RunHandAction(s_rightHand, false, s_rightDecision);
-		ServiceThrowableHold(s_leftHand, true, s_input.leftHolsterHeld);
-		ServiceThrowableHold(s_rightHand, false, s_input.rightHolsterHeld);
+		RunHandAction(gLeftHand, true, s_leftDecision);
+		RunHandAction(gRightHand, false, s_rightDecision);
+		ServiceThrowableHold(gLeftHand, true, s_input.leftHolsterHeld);
+		ServiceThrowableHold(gRightHand, false, s_input.rightHolsterHeld);
+	}
+
+	static void ResetPress(HandState& hand)
+	{
+		hand.gesture.Reset();
+		hand.pressFromZone = false;
+		hand.pressTwoHanded = false;
+		hand.twoHandedLastFrame = false;
+		hand.pressDrewThrowable = false;
+		hand.throwableHoldSlot = 0;
+		hand.depositBlocked = false;
 	}
 
 	void resetInteractionState() {
-		s_leftHand.gesture.Reset();
-		s_rightHand.gesture.Reset();
-		s_leftHand.pressFromZone = false;
-		s_rightHand.pressFromZone = false;
-		s_leftHand.pressTwoHanded = s_rightHand.pressTwoHanded = false;
-		s_leftHand.twoHandedLastFrame = s_rightHand.twoHandedLastFrame = false;
-		for (auto* hand : { &s_leftHand, &s_rightHand }) {
-			hand->pressDrewThrowable = false;
-			hand->throwableHoldSlot = 0;
-			hand->depositBlocked = false;
-		}
+		ResetPress(gLeftHand);
+		ResetPress(gRightHand);
 		CancelTransfers();
 		ReleaseHandoffs();
 		ReleaseDeposits();

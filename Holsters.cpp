@@ -212,6 +212,8 @@ namespace Holsters {
 
 	bool s_skeletonRebuildPending{};
 
+	// The second config-button press must follow the first this fast.
+	const auto kConfigDoublePress = std::chrono::milliseconds(300);
 	Clock::time_point s_configFirstPress{};
 
 	Clock::time_point s_lastFrame{};
@@ -226,7 +228,7 @@ namespace Holsters {
 
 	bool TryGetHandPosition(
 		BSFlattenedBoneTree* tree,
-		const bool isLeft,
+		bool isLeft,
 		NiPoint3& position)
 	{
 		if (!tree || !tree->transforms || tree->numTransforms <= 0) {
@@ -253,8 +255,8 @@ namespace Holsters {
 				continue;
 			}
 
-			holster->stickyLeft = s_leftHand.zone == slot;
-			holster->stickyRight = s_rightHand.zone == slot;
+			holster->stickyLeft = gLeftHand.zone == slot;
+			holster->stickyRight = gRightHand.zone == slot;
 			if (_isConfigModeActive || !holster->debugSphere) {
 				continue;
 			}
@@ -274,14 +276,14 @@ namespace Holsters {
 
 	void ClearHandContacts()
 	{
-		s_leftHand.zone = Interaction::kNoSlot;
-		s_leftHand.anchorAvailable = false;
-		s_rightHand.zone = Interaction::kNoSlot;
-		s_rightHand.anchorAvailable = false;
-		for (auto* hand : { &s_leftHand, &s_rightHand }) {
-			hand->nearestSlot = Interaction::kNoSlot;
-			hand->zoneSamples = 0;
-		}
+		gLeftHand.zone = Interaction::kNoSlot;
+		gLeftHand.anchorAvailable = false;
+		gRightHand.zone = Interaction::kNoSlot;
+		gRightHand.anchorAvailable = false;
+		gLeftHand.trace.nearestSlot = Interaction::kNoSlot;
+		gLeftHand.trace.zoneSamples = 0;
+		gRightHand.trace.nearestSlot = Interaction::kNoSlot;
+		gRightHand.trace.zoneSamples = 0;
 		isHolsterIntersected = false;
 		for (auto& [slot, holster] : HolsterRegisteredObjects) {
 			(void)slot;
@@ -294,20 +296,20 @@ namespace Holsters {
 
 	// The slot's display, or null. Never inserts: a null entry would make
 	// an empty slot look occupied to the draw and holster paths.
-	MyWeapon* SlotDisplay(const UInt32 slot)
+	MyWeapon* SlotDisplay(UInt32 slot)
 	{
 		const auto registered = WeaponRegisteredObjects.find(slot);
 		return registered != WeaponRegisteredObjects.end() ? registered->second : nullptr;
 	}
 
 	// The slot's holster sphere record, or null; never inserts either.
-	MyHolster* SlotHolster(const UInt32 slot)
+	MyHolster* SlotHolster(UInt32 slot)
 	{
 		const auto registered = HolsterRegisteredObjects.find(slot);
 		return registered != HolsterRegisteredObjects.end() ? registered->second : nullptr;
 	}
 
-	bool SlotAvailable(const UInt32 slot)
+	bool SlotAvailable(UInt32 slot)
 	{
 		return slot >= 1 && slot <= kMaximumHolsterSlots &&
 			isHolsterSlotEnabled(slot) && HolsterContainers[slot] && *g_player;
@@ -321,20 +323,20 @@ namespace Holsters {
 
 	// Main Functions
 
-	bool isHolsterSlotEnabled(const UInt32 slot) {
+	bool isHolsterSlotEnabled(UInt32 slot) {
 		return SlotPolicy::IsEnabled(s_enabledHolsterSlots, slot);
 	}
 
-	UInt32 getNextEnabledHolster(const UInt32 current) {
+	UInt32 getNextEnabledHolster(UInt32 current) {
 		return SlotPolicy::NextEnabled(s_enabledHolsterSlots, current);
 	}
 
-	bool isHandInHolsterZone(const bool isLeft) {
-		return GetHandRuntime(isLeft).zone != Interaction::kNoSlot;
+	bool isHandInHolsterZone(bool isLeft) {
+		return GetHand(isLeft).zone != Interaction::kNoSlot;
 	}
 
-	UInt32 getHandHolster(const bool isLeft) {
-		return GetHandRuntime(isLeft).zone;
+	UInt32 getHandHolster(bool isLeft) {
+		return GetHand(isLeft).zone;
 	}
 
 	NiPoint3 HolsterCenterWorld(const MyHolster& holster) {
@@ -383,14 +385,14 @@ namespace Holsters {
 		if (!(*g_player) ||
 			!(*g_player)->unkF0 ||
 			!(*g_player)->unkF0->rootNode) {
-			TraceFrameSkip(!(*g_player) ? FrameSkip::kNoPlayer : FrameSkip::kNoRoot);
+			TraceFrameSkip(!(*g_player) ? FrameSkip_NoPlayer : FrameSkip_NoRoot);
 			resetInteractionState();
 			return;
 		}
 		{
 			if (initBoneTreeFlag) {
 				if (!initBoneTree()) {
-					TraceFrameSkip(FrameSkip::kBoneTreeInit);
+					TraceFrameSkip(FrameSkip_BoneTreeInit);
 					resetInteractionState();
 					return;
 				}
@@ -403,11 +405,11 @@ namespace Holsters {
 				// change runs. Logged every time it runs.
 				s_skeletonRebuildPending = false;
 				_MESSAGE("[%s] Holster skeleton rebuild: holster bones and weapon displays resolved again",
-					TraceStamp().text);
+					TraceTime());
 				resetInteractionState();
 				weaponsPAChange();
 			}
-			TraceFrameSkip(FrameSkip::kNone);
+			TraceFrameSkip(FrameSkip_None);
 			const auto now = Clock::now();
 			gFrameSeconds = s_lastFrame == Clock::time_point{} ? 0.0F :
 				(std::min)(0.1F, std::chrono::duration<float>(now - s_lastFrame).count());
@@ -2004,7 +2006,7 @@ namespace Holsters {
 		const void* root = (*g_player)->unkF0->rootNode;
 		if (gResolvedBoneTree && (root != gResolvedRoot || boneTree != gResolvedBoneTree)) {
 			_MESSAGE("[%s] Holster skeleton changed: root %p->%p tree %p->%p transforms %d->%d",
-				TraceStamp().text, gResolvedRoot, root, gResolvedBoneTree,
+				TraceTime(), gResolvedRoot, root, gResolvedBoneTree,
 				static_cast<const void*>(boneTree), gResolvedTransforms, boneTree->numTransforms);
 			gResolvedRoot = root;
 			gResolvedBoneTree = boneTree;
@@ -2055,37 +2057,22 @@ namespace Holsters {
 			}
 		}
 
-		const auto recordNearest = [](HandInteractionRuntime& hand,
-			const Interaction::ZoneSample* samples, const std::size_t count) {
-			hand.nearestSlot = Interaction::kNoSlot;
-			hand.zoneSamples = count;
-			float bestMargin = std::numeric_limits<float>::infinity();
-			for (std::size_t index = 0; index < count; ++index) {
-				const float margin = samples[index].distance - samples[index].radius;
-				if (margin < bestMargin) {
-					bestMargin = margin;
-					hand.nearestSlot = samples[index].slot;
-					hand.nearestDistance = samples[index].distance;
-					hand.nearestRadius = samples[index].radius;
-				}
-			}
-		};
-		recordNearest(s_leftHand, leftSamples.data(), leftSampleCount);
-		recordNearest(s_rightHand, rightSamples.data(), rightSampleCount);
+		TraceNearestHolster(gLeftHand, leftSamples.data(), leftSampleCount);
+		TraceNearestHolster(gRightHand, rightSamples.data(), rightSampleCount);
 
-		const UInt32 previousLeft = s_leftHand.zone;
-		const UInt32 previousRight = s_rightHand.zone;
-		s_leftHand.position = leftPosition;
-		s_rightHand.position = rightPosition;
-		s_leftHand.anchorAvailable = leftAvailable;
-		s_rightHand.anchorAvailable = rightAvailable;
-		s_leftHand.zone = leftAvailable ?
+		const UInt32 previousLeft = gLeftHand.zone;
+		const UInt32 previousRight = gRightHand.zone;
+		gLeftHand.trace.position = leftPosition;
+		gRightHand.trace.position = rightPosition;
+		gLeftHand.anchorAvailable = leftAvailable;
+		gRightHand.anchorAvailable = rightAvailable;
+		gLeftHand.zone = leftAvailable ?
 			Interaction::SelectStableZone(
 				previousLeft,
 				leftSamples.data(),
 				leftSampleCount) :
 			Interaction::kNoSlot;
-		s_rightHand.zone = rightAvailable ?
+		gRightHand.zone = rightAvailable ?
 			Interaction::SelectStableZone(
 				previousRight,
 				rightSamples.data(),
@@ -2093,28 +2080,28 @@ namespace Holsters {
 			Interaction::kNoSlot;
 
 		const bool leftEntered =
-			s_leftHand.zone != Interaction::kNoSlot &&
-			s_leftHand.zone != previousLeft;
+			gLeftHand.zone != Interaction::kNoSlot &&
+			gLeftHand.zone != previousLeft;
 		const bool rightEntered =
-			s_rightHand.zone != Interaction::kNoSlot &&
-			s_rightHand.zone != previousRight;
+			gRightHand.zone != Interaction::kNoSlot &&
+			gRightHand.zone != previousRight;
 
 		if (!_isConfigModeActive) {
 			// Update the non-preferred hand first so a simultaneous entry
 			// leaves the configured hand as the legacy current holster.
 			if (gIsRightHanded) {
 				if (leftEntered) {
-					gCurHolster = s_leftHand.zone;
+					gCurHolster = gLeftHand.zone;
 				}
 				if (rightEntered) {
-					gCurHolster = s_rightHand.zone;
+					gCurHolster = gRightHand.zone;
 				}
 			} else {
 				if (rightEntered) {
-					gCurHolster = s_rightHand.zone;
+					gCurHolster = gRightHand.zone;
 				}
 				if (leftEntered) {
-					gCurHolster = s_leftHand.zone;
+					gCurHolster = gLeftHand.zone;
 				}
 			}
 		}
@@ -2135,8 +2122,8 @@ namespace Holsters {
 		}
 
 		isHolsterIntersected =
-			s_leftHand.zone != Interaction::kNoSlot ||
-			s_rightHand.zone != Interaction::kNoSlot;
+			gLeftHand.zone != Interaction::kNoSlot ||
+			gRightHand.zone != Interaction::kNoSlot;
 		UpdateHolsterSpherePresentation();
 	}
 
@@ -2374,7 +2361,7 @@ namespace Holsters {
 
 	// Visible Weapon Functions
 
-	void hideMagazine(NiNode* original, const bool IsWMelee) {
+	void hideMagazine(NiNode* original, bool IsWMelee) {
 		original->m_name.c_str();
 		original->m_children.m_emptyRunStart;
 		if (original->m_children.m_emptyRunStart != 0) {
@@ -2448,7 +2435,7 @@ namespace Holsters {
 	}
 
 	// Name of the power armor piece whose authored poses a slot uses.
-	std::string PowerArmorPieceName(const UInt32 handle) {
+	std::string PowerArmorPieceName(UInt32 handle) {
 		const int equipSlot = (handle > 4 || handle < 3) ? 11 : (handle == 3 ? 14 : 15);
 		TESForm* equippedItem = (*g_player)->equipData->slots[equipSlot].item;
 		const char* name = equippedItem ? equippedItem->GetFullName() : nullptr;
@@ -2457,7 +2444,7 @@ namespace Holsters {
 
 	// The authored bone-local pose of a weapon in a slot: its own saved
 	// offset, else the slot's default for melee or other weapons.
-	bool ResolveHolsterPose(const UInt32 handle, const MyWeapon& weapon, NiTransform& pose) {
+	bool ResolveHolsterPose(UInt32 handle, const MyWeapon& weapon, NiTransform& pose) {
 		auto lookup = g_weaponOffsets->getOffset(FileNameCreation(handle, weapon.ThisForm), normal);
 		if (!lookup.has_value()) {
 			const bool inPowerArmor = detectInPowerArmor();
@@ -2488,7 +2475,7 @@ namespace Holsters {
 		}
 	}
 
-	void StripCollision(NiAVObject* object, const int depth) {
+	void StripCollision(NiAVObject* object, int depth) {
 		if (!object || depth < 0) {
 			return;
 		}
@@ -2502,12 +2489,12 @@ namespace Holsters {
 		}
 	}
 
-	bool IsBlacklisted(const UInt32 handle, const char* weapName) {
+	bool IsBlacklisted(UInt32 handle, const char* weapName) {
 		const auto& list = gInPowerArmor ? c_WeaponBlacklistPA[handle] : c_WeaponBlacklist[handle];
 		return std::any_of(list.begin(), list.end(), [weapName](const std::string& entry) { return entry == weapName; });
 	}
 
-	void RemoveHolsterArtNode(const UInt32 handle) {
+	void RemoveHolsterArtNode(UInt32 handle) {
 		const std::string artName = "HolsterArt" + std::to_string(handle);
 		NiNode* art = getChildNode(artName.c_str(), (*g_player)->unkF0->rootNode);
 		if (art) {
@@ -2517,7 +2504,7 @@ namespace Holsters {
 		}
 	}
 
-	NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, const UInt32 handle,
+	NiNode* attachWeaponClone(MyWeapon& record, NiNode* source, UInt32 handle,
 		const char* nodeName, const NiTransform* startWorld) {
 		if (!source || !record.wbone || IsBlacklisted(handle, record.WeaponName.c_str())) {
 			return nullptr;
@@ -2586,7 +2573,7 @@ namespace Holsters {
 		record = nullptr;
 	}
 
-	std::string ChooseArtFile(const UInt32 handle, const std::string& weapon) {
+	std::string ChooseArtFile(UInt32 handle, const std::string& weapon) {
 		const std::string normalDir = "Data\\Meshes\\VRH\\Holsters\\" + weapon;
 		const std::string powerArmorDir = "Data\\Meshes\\VRH\\Holsters\\_PA\\" + weapon;
 		const std::string pattern = "\\HolsterArt" + std::to_string(handle) + "*.nif";
@@ -2613,7 +2600,7 @@ namespace Holsters {
 		return exists_file(path) ? path : std::string{};
 	}
 
-	void attachHolsterArt(MyWeapon& record, const UInt32 handle) {
+	void attachHolsterArt(MyWeapon& record, UInt32 handle) {
 		if (!record.WeapMesh || !record.wbone) {
 			return;
 		}

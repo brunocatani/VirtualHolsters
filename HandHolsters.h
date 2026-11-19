@@ -1,9 +1,17 @@
 #pragma once
 
-// Per-hand holster interaction: each hand has its own holster zone, button
-// press and draw, so both hands can holster and draw at the same time.
-// HandHolsters.cpp decides what a press does, HolsterDraw.cpp carries a draw
-// out over the following frames. docs/HowItWorks.md walks through one press.
+// Per-hand holstering.
+//
+// Each hand has its own holster zone, its own button press and its own draw,
+// so both hands can holster and draw in the same frame.
+//
+//   HandHolsters.cpp   reads the holster button and decides what a press does:
+//                      holster, draw, swap, store a loose weapon, draw a grenade.
+//   HolsterDraw.cpp    carries a draw out over the next frames and moves the
+//                      weapon shown in the holster into the hand.
+//   HolsterTrace.cpp   log output only.
+//
+// docs/HowItWorks.md follows one button press through these files.
 
 #include "Holsters.h"
 #include "HolsterInteraction.h"
@@ -14,209 +22,196 @@
 #include <string>
 
 namespace Holsters {
-	constexpr std::size_t kMaximumHolsterSlots = 7;
+	const std::size_t kMaximumHolsterSlots = 7;
 
-	using Clock = std::chrono::steady_clock;
+	typedef std::chrono::steady_clock Clock;
 
-	// A holster draw waits this long for ROCK or the engine to put the
-	// weapon in the hand before the slot keeps its weapon again.
-	constexpr auto kDrawTimeout = std::chrono::milliseconds(2000);
+	// Timings.
+	// How long a draw waits for the weapon to reach the hand before it gives up.
+	const auto kDrawTimeout = std::chrono::milliseconds(2000);
+	// How long a weapon takes to slide from the hand into its holster pose.
+	const float kHolsterBlendSeconds = 0.18F;
+	// How long a drawn weapon takes to slide from the holster into the grip.
+	const float kDrawBlendSeconds = 0.12F;
+	// The longest the holster's copy stays in the hand after the equip finished.
+	const auto kRevealWait = std::chrono::milliseconds(400);
+	const float kHolsterHapticSeconds = 0.03F;
+	// Holding the button this long in a grenade holster after drawing empties it.
+	const auto kThrowableClearHold = std::chrono::milliseconds(1500);
+	// Frames ROCK gets to let go of a loose weapon released into a holster.
+	const int kDepositCommitFrames = 45;
 
-	// A weapon put away from a hand eases into its holster pose.
-	constexpr float kHolsterBlendSeconds = 0.18F;
-
-	// A drawn stand-in eases into the learned grip pose this fast, and
-	// gives way to the real weapon at the latest after this long.
-	constexpr float kDrawBlendSeconds = 0.12F;
-
-	constexpr auto kRevealWait = std::chrono::milliseconds(400);
-
-	constexpr float kHolsterHapticSeconds = 0.03F;
-
-	// A press that drew a throwable and stays in its holster this long
-	// empties that holster.
-	constexpr auto kThrowableClearHold = std::chrono::milliseconds(1500);
-
-	// Frames a released loose weapon may take for ROCK to let go of it
-	// before its holster deposit is abandoned.
-	constexpr int kDepositCommitFrames = 45;
-
-	// The second config-button press must follow the first this fast.
-	constexpr auto kConfigDoublePress = std::chrono::milliseconds(300);
-
-	struct HandInteractionRuntime
-	{
-		Interaction::HolsterGesture gesture{};
-		UInt32 zone{};
-		bool anchorAvailable{};
-		// The current press started inside a zone; ROCK input stays
-		// reserved for that hand until the button is released.
-		bool pressFromZone{};
-		// When the current press started (press diagnostics).
-		Clock::time_point pressedAt{};
-		// The other hand still held this hand's weapon when this hand let
-		// go during the current press: the press never draws. A weapon held
-		// by one hand, or a grabbed object, keeps drawing on let-go.
-		bool pressTwoHanded{};
-		bool twoHandedLastFrame{};
-		// Input trace: the nearest enabled holster this frame and the
-		// button state the trace last reported.
-		UInt32 nearestSlot{ Interaction::kNoSlot };
-		float nearestDistance{};
-		float nearestRadius{};
-		std::size_t zoneSamples{};
-		bool heldLastFrame{};
-		// Hand point the zone test used this frame (world), for the
-		// press trace's position fields.
-		NiPoint3 position{};
-		// The current press drew a throwable: ROCK keeps the grab button,
-		// so letting go throws it.
-		bool pressDrewThrowable{};
-		// That press's holster while the press stays there: held
-		// kThrowableClearHold, it empties the holster.
-		UInt32 throwableHoldSlot{};
-		Clock::time_point throwableHoldSince{};
-		// The current press emptied a throwable holster: its release
-		// stores nothing.
-		bool depositBlocked{};
-	};
-
-	// What a hand holds, from ROCK with ROCK bound, else the single
-	// vanilla weapon in the configured weapon hand.
+	// What a hand holds right now. Filled by GetHandWeaponFacts: from ROCK when
+	// ROCK is loaded, otherwise from the one vanilla weapon in the weapon hand.
 	struct HandWeaponFacts
 	{
-		bool known{};
-		bool holds{};
-		bool canReceive{};
-		// The other hand supports the weapon this hand fires (two-handed).
-		bool supported{};
-		// This hand supports a weapon the other hand fires (two-handed).
-		bool supports{};
-		// This hand fires or supports an equipped weapon.
-		bool grips{};
-		UInt32 nativeIndex{};
-		UInt32 formId{};
+		bool known = false;        // false: no data this frame, do nothing
+		bool holds = false;        // this hand holds a weapon it can holster
+		bool canReceive = false;   // a draw may go into this hand
+		bool supported = false;    // the other hand also holds this hand's weapon (two-handed)
+		bool supports = false;     // this hand is the second hand on the other hand's weapon
+		bool grips = false;        // holds or supports
+		UInt32 nativeIndex = 0;    // the game's equip index of the held weapon (0 or 1)
+		UInt32 formId = 0;         // the held weapon's form
 	};
 
-	enum class HolsterAction : std::uint8_t
+	enum HolsterAction
 	{
-		kNone,
-		kHolster,
-		kDraw,
-		kSwap
+		HolsterAction_None,
+		HolsterAction_Holster,   // hand weapon -> empty holster
+		HolsterAction_Draw,      // holster weapon -> empty hand
+		HolsterAction_Swap       // hand weapon and holster weapon change places
 	};
 
-	// One running draw (or swap) per hand. The slot keeps its tag and
-	// display until the weapon is in the hand, so a refused or failed equip
-	// never empties a holster and the weapon never disappears in between.
+	// A draw or swap that is running. The holster keeps its weapon until the
+	// weapon is really in the hand, so a failed equip never empties a holster.
 	struct HandTransfer
 	{
-		bool active{};
-		bool requested{};
-		bool isLeft{};
-		UInt32 slot{};
-		UInt32 formId{};
-		std::string name;
-		std::uint64_t command{};
-		Clock::time_point deadline{};
-		// Swap: the weapon leaving the hand takes the slot on success. Its
-		// clone stays hidden and follows the hand's model until the stored
-		// weapon is presented, so the two never show at once.
-		MyWeapon* outgoing{};
+		bool active = false;
+		bool requested = false;    // the equip was accepted (by ROCK or the game)
+		bool isLeft = false;
+		UInt32 slot = 0;           // the holster being drawn from
+		UInt32 formId = 0;         // the weapon being drawn
+		std::string name;          // its holster tag
+		std::uint64_t command = 0; // ROCK's id for the equip
+		Clock::time_point deadline;
+
+		// Swap only: the weapon leaving the hand. Its copy stays hidden until
+		// the drawn weapon shows, so the two are never visible together.
+		MyWeapon* outgoing = nullptr;
 		std::string outgoingName;
-		UInt16 outgoingNameLength{};
-		bool outgoingHidden{};
-		UInt32 outgoingIndex{};
-		UInt32 outgoingFormId{};
-		// The holster display, taken into the drawing hand on the frame of
-		// the grab; it stands in for the weapon until the real one shows.
-		MyWeapon* inHand{};
-		// The slot ROCK equipped the weapon into, from its result.
-		std::uint32_t weaponSlot{};
-		bool weaponSlotKnown{};
+		UInt16 outgoingNameLength = 0;
+		bool outgoingHidden = false;
+		UInt32 outgoingIndex = 0;
+		UInt32 outgoingFormId = 0;
+
+		// The holster's copy of the weapon, moved into the hand when the draw
+		// starts. It is shown until the real weapon appears.
+		MyWeapon* inHand = nullptr;
+
+		// The equip slot ROCK put the weapon into, from ROCK's result.
+		std::uint32_t weaponSlot = 0;
+		bool weaponSlotKnown = false;
 	};
 
-	// After the equip succeeds the stand-in stays in the hand until the
-	// real weapon is visible there (ROCK reveals it once the native draw
-	// pose is ready), so the hand is never empty.
+	// After the equip finished: the holster's copy stays in the hand until the
+	// real weapon is visible there, then it is removed.
 	struct HandHandoff
 	{
-		MyWeapon* clone{};
-		UInt32 formId{};
-		Clock::time_point deadline{};
-		// The draw's ROCK command: the stand-in's pose is reported under
-		// it until ROCK reveals the weapon.
-		std::uint64_t command{};
-		// A second weapon is in a hand's role only once its grip holds
-		// that hand, which can follow its presentation; its slot from the
-		// equip result is checked directly.
-		std::uint32_t weaponSlot{};
-		bool weaponSlotKnown{};
+		MyWeapon* clone = nullptr;
+		UInt32 formId = 0;
+		Clock::time_point deadline;
+		std::uint64_t command = 0;       // ROCK's id for the equip
+		std::uint32_t weaponSlot = 0;
+		bool weaponSlotKnown = false;
 	};
 
-	// A loose weapon a hand holds through ROCK goes into the empty holster
-	// the hand releases it in. While the hand holds it in that holster,
-	// ROCK Storage keeps a claim on it (renewed each frame); the release
-	// there commits the claim, and the item is taken once ROCK has let go.
+	// A loose weapon (picked up with ROCK, not equipped) on its way into an
+	// empty holster. While the hand holds it inside the holster, ROCK reserves
+	// it for us (lease). Letting go there sets committing; once ROCK has let
+	// go, the weapon is taken into the inventory and the holster.
 	struct HandDeposit
 	{
-		std::uint64_t lease{};
-		std::uint32_t referenceFormId{};
-		UInt32 slot{};
-		bool committing{};
-		int framesLeft{};
+		std::uint64_t lease = 0;              // ROCK's reservation, 0 = none
+		std::uint32_t referenceFormId = 0;    // the loose weapon
+		UInt32 slot = 0;
+		bool committing = false;
+		int framesLeft = 0;
 	};
 
-	// A holstered throwable drawn into a hand: ROCK puts one item of it
-	// from the inventory into the hand as a grab. The holster keeps its
-	// tag while any copy is left.
+	// A grenade or mine being drawn: ROCK puts one from the inventory into the
+	// hand as a grabbed object. The holster keeps its tag while any are left.
 	struct ThrowableDraw
 	{
-		bool active{};
-		UInt32 slot{};
-		UInt32 formId{};
+		bool active = false;
+		UInt32 slot = 0;
+		UInt32 formId = 0;
 		std::string name;
-		std::uint64_t command{};
-		Clock::time_point deadline{};
+		std::uint64_t command = 0;   // ROCK's id for the grab, 0 = not accepted yet
+		Clock::time_point deadline;
 	};
+
+	// Values kept for the log only (HolsterTrace.cpp).
+	struct HandTrace
+	{
+		UInt32 nearestSlot = Interaction::kNoSlot;
+		float nearestDistance = 0.0F;
+		float nearestRadius = 0.0F;
+		std::size_t zoneSamples = 0;
+		bool heldLastFrame = false;
+		NiPoint3 position{};
+		Clock::time_point pressedAt;
+	};
+
+	// Everything the mod keeps for one hand.
+	struct HandState
+	{
+		// The holster zone the hand is in (0 = none), set by detectHolsterSphere.
+		UInt32 zone = 0;
+		// The hand's position is known this frame.
+		bool anchorAvailable = false;
+
+		// The holster button: tells presses and releases apart.
+		Interaction::HolsterGesture gesture;
+		// The current press started in a holster it can act on. ROCK does not
+		// get the button until it is released.
+		bool pressFromZone = false;
+		// The current press let go of a two-handed weapon. It never draws.
+		bool pressTwoHanded = false;
+		bool twoHandedLastFrame = false;
+		// The current press drew a grenade. ROCK keeps the button, so letting
+		// go throws it.
+		bool pressDrewThrowable = false;
+		// The grenade holster of that press while the hand stays in it.
+		UInt32 throwableHoldSlot = 0;
+		Clock::time_point throwableHoldSince;
+		// The current press emptied a grenade holster: its release stores nothing.
+		bool depositBlocked = false;
+
+		// Work in progress for this hand.
+		HandTransfer transfer;
+		HandHandoff handoff;
+		HandDeposit deposit;
+		ThrowableDraw throwableDraw;
+
+		HandTrace trace;
+	};
+
+	extern HandState gLeftHand;
+	extern HandState gRightHand;
+	HandState& GetHand(bool isLeft);
 
 	// What VRButtonsMain read from the controllers this frame.
 	struct HolsterButtonInput
 	{
-		bool leftControllerAvailable{};
-		bool rightControllerAvailable{};
-		bool leftHolsterHeld{};
-		bool rightHolsterHeld{};
-		// The game's own read of the holster button (button trace only).
-		bool leftGameHeld{};
-		bool rightGameHeld{};
-		bool gameStopped{};
-		bool scopeOpen{};
+		bool leftControllerAvailable = false;
+		bool rightControllerAvailable = false;
+		bool leftHolsterHeld = false;
+		bool rightHolsterHeld = false;
+		// The game's own read of the holster button (for the log only).
+		bool leftGameHeld = false;
+		bool rightGameHeld = false;
+		bool gameStopped = false;
+		bool scopeOpen = false;
 	};
 
-	extern HandInteractionRuntime s_leftHand;
-	extern HandInteractionRuntime s_rightHand;
-	extern std::array<HandTransfer, 2> s_transfers;          // [0] right, [1] left
-	extern std::array<HandHandoff, 2> s_handoffs;            // [0] right, [1] left
-	extern std::array<HandDeposit, 2> s_deposits;            // [0] right, [1] left
-	extern std::array<ThrowableDraw, 2> s_throwableDraws;    // [0] right, [1] left
-
-	HandTransfer& TransferFor(bool isLeft);
-	HandDeposit& DepositFor(bool isLeft);
-	ThrowableDraw& ThrowableDrawFor(bool isLeft);
-	const HandInteractionRuntime& GetHandRuntime(bool isLeft);
-
 	// HandHolsters.cpp
+
+	// Called by VRButtonsMain every frame, in this order.
 	void UpdateHandGestures(const HolsterButtonInput& input);
 	void RunHandActions();
+
 	void PulseHand(bool isLeft);
 	void SetActivationSuppressed(bool suppress);
 	bool SlotHoldsThrowable(UInt32 slot);
 	HandWeaponFacts GetHandWeaponFacts(bool isLeft);
+	// A draw is running from this slot.
 	bool SlotHasTransfer(UInt32 slot);
 	std::array<bool, 8> BusySlots();
+	// Where the hand's weapon model is on screen now.
 	bool CaptureHeldWeapon(const HandWeaponFacts& facts, NiNode*& model, NiTransform& world);
 	WeaponStack FindHandStack(const HandWeaponFacts& facts);
+	// Takes a weapon lying in the world into the inventory and an empty holster.
 	bool DepositReference(UInt32 slot, TESObjectREFR* reference);
 	void ServiceDeposits();
 	void ReleaseDeposits();
@@ -224,12 +219,17 @@ namespace Holsters {
 	void CancelThrowableDraws();
 
 	// HolsterDraw.cpp
+
+	// Starts drawing the slot's weapon into the hand. With swap, the hand's
+	// weapon goes into the slot once the drawn one is in the hand.
 	bool BeginDraw(bool isLeft, UInt32 slot, const HandWeaponFacts& facts, bool swap);
+	// Called by MainLoop every frame.
 	void ServiceTransfers();
-	void CancelTransfers();
 	void ServiceHandoffs();
-	void ReleaseHandoffs();
 	void ServiceWarmWeapons();
 	void UpdateWeaponBlends();
+	// Jumps every sliding holster weapon to its final pose.
 	void FinishWeaponBlends();
+	void CancelTransfers();
+	void ReleaseHandoffs();
 }

@@ -9,20 +9,20 @@
 
 namespace Holsters {
 	// Why the frame loop skipped.
-	enum class FrameSkip : std::uint8_t { kNone, kNoPlayer, kNoRoot, kBoneTreeInit };
-
-	// Local wall-clock stamp for the holster trace (the log has none).
-	struct TraceStamp
+	enum FrameSkip
 	{
-		char text[16]{};
-		TraceStamp()
-		{
-			SYSTEMTIME now{};
-			GetLocalTime(&now);
-			std::snprintf(text, sizeof(text), "%02u:%02u:%02u.%03u",
-				now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
-		}
+		FrameSkip_None,
+		FrameSkip_NoPlayer,
+		FrameSkip_NoRoot,
+		FrameSkip_BoneTreeInit
 	};
+
+	// The local time as text, for log lines (the log has no time stamps).
+	// Valid until the next call.
+	const char* TraceTime();
+
+	// Remembers the holster nearest to the hand, for the press log line.
+	void TraceNearestHolster(HandState& hand, const Interaction::ZoneSample* samples, std::size_t count);
 
 	// Logs when the frame loop starts or stops skipping.
 	void TraceFrameSkip(FrameSkip skip);

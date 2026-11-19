@@ -141,7 +141,7 @@ namespace Holsters {
 		return m;
 	}
 
-	NiMatrix43 SlerpRotation(const NiMatrix43& from, const NiMatrix43& to, const float t)
+	NiMatrix43 SlerpRotation(const NiMatrix43& from, const NiMatrix43& to, float t)
 	{
 		Quaternion a = ToQuaternion(from);
 		Quaternion b = ToQuaternion(to);
@@ -167,7 +167,7 @@ namespace Holsters {
 		return FromQuaternion(q);
 	}
 
-	NiTransform BlendTransforms(const NiTransform& from, const NiTransform& to, const float t)
+	NiTransform BlendTransforms(const NiTransform& from, const NiTransform& to, float t)
 	{
 		NiTransform result{};
 		result.rot = SlerpRotation(from.rot, to.rot, t);
